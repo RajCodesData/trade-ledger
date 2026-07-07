@@ -33,13 +33,18 @@ export async function GET(request) {
     // Upstox tokens expire daily; store an approximate expiry 20 hours out.
     const expiresAt = new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString();
 
-    await supabaseAdmin.from("broker_connections").upsert({
+    const { error: upsertError } = await supabaseAdmin.from("broker_connections").upsert({
       user_id: userId,
       broker: "upstox",
       access_token: tokenData.access_token,
       connected_at: new Date().toISOString(),
       token_expires_at: expiresAt,
     });
+
+    if (upsertError) {
+      console.error("Failed to save broker connection:", upsertError);
+      return NextResponse.redirect(`${appUrl}/?upstox=dberror&msg=${encodeURIComponent(upsertError.message)}`);
+    }
 
     return NextResponse.redirect(`${appUrl}/?upstox=connected`);
   } catch (e) {
