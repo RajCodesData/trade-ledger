@@ -410,6 +410,11 @@ function AnalyticsTab({ trades }) {
     try {
       const res = await fetch("/api/ai/weekly-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(summary) });
       const data = await res.json();
+      if (data.error) {
+        setOutput(`<div class="banner danger">AI service error: ${data.error}</div>`);
+        setLoading(false);
+        return;
+      }
       const headerMap = { "WHAT WENT WELL": "✅ What went well", "MISTAKES MADE": "⚠️ Mistakes made", "AVOID NEXT WEEK": "🚫 Avoid next week" };
       setOutput(renderAiText(data.text || "", headerMap));
     } catch (e) {
@@ -459,6 +464,11 @@ function BacktestTab() {
     try {
       const res = await fetch("/api/ai/backtest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ strategy, market, tenure }) });
       const data = await res.json();
+      if (data.error) {
+        setOutput(`<div class="banner danger">AI service error: ${data.error}</div>`);
+        setLoading(false);
+        return;
+      }
       const headerMap = { "LIKELY PROFITABILITY": "📈 Likely profitability", "KEY STRENGTHS": "💪 Key strengths", "KEY RISKS": "⚠️ Key risks", "WHAT WOULD IMPROVE THIS": "🛠️ What would improve this" };
       setOutput(renderAiText(data.text || "", headerMap) + `<div class="muted-note">This is an AI-generated qualitative read based on your description, not a statistical backtest against real historical price data.</div>`);
     } catch (e) {
