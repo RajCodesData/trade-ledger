@@ -12,21 +12,24 @@ Evaluation horizon: ${tenure}
 Respond in plain text with exactly these headers, each on its own line: "LIKELY PROFITABILITY", "KEY STRENGTHS", "KEY RISKS", "WHAT WOULD IMPROVE THIS". Under LIKELY PROFITABILITY give one short paragraph with a qualitative call (e.g. low/medium/high probability of consistent profitability) and why, clearly stating this is a reasoned qualitative judgment, not a real backtest. Under the other three headers give 2-4 "- " bullet points each. Keep the whole response tight and specific to the strategy described, not generic trading advice.`;
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "claude-sonnet-5",
+        model: "gpt-4o-mini",
         max_tokens: 1100,
         messages: [{ role: "user", content: prompt }],
       }),
     });
     const data = await response.json();
-    const text = (data.content || []).map((b) => b.text || "").join("\n");
+    if (data.error) {
+      console.error("OpenAI error:", data.error);
+      return NextResponse.json({ text: "", error: data.error.message }, { status: 200 });
+    }
+    const text = data.choices?.[0]?.message?.content || "";
     return NextResponse.json({ text });
   } catch (e) {
     console.error(e);
