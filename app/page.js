@@ -651,6 +651,13 @@ function TaxReportTab({ trades }) {
 
 
 // ---------- AUTO-TRADE TAB (paper trading only) ----------
+const STRATEGY_TEMPLATES = [
+  { label: "EMA crossover", text: "Buy NIFTY when the 9 EMA crosses above the 21 EMA. Stop loss 0.5%, target 1%, quantity 50, trade between 9:15 and 15:00." },
+  { label: "RSI reversal", text: "Buy NIFTY when RSI drops below 30 (oversold) and then price is above VWAP. Stop loss 0.5%, target 1%, quantity 50." },
+  { label: "VWAP reversion", text: "Sell NIFTY when price is above VWAP and RSI is above 70 (overbought). Stop loss 0.5%, target 1%, quantity 50." },
+  { label: "Candle breakout", text: "Buy NIFTY when price breaks above the previous candle's high while trading above the 5 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 50." },
+];
+
 function AutoTradeTab({ session }) {
   const user = session.user;
   const [strategies, setStrategies] = useState([]);
@@ -662,6 +669,7 @@ function AutoTradeTab({ session }) {
   const [draft, setDraft] = useState(null); // parsed rules pending confirmation
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(null);
+  const [newSignalCount, setNewSignalCount] = useState(0);
 
   useEffect(() => { load(); }, []);
 
@@ -670,6 +678,14 @@ function AutoTradeTab({ session }) {
     setStrategies(s || []);
     const { data: pt } = await supabase.from("paper_trades").select("*").eq("user_id", user.id).order("entry_time", { ascending: false });
     setPaperTrades(pt || []);
+
+    const lastSeenKey = `tradeledger_last_seen_trade_${user.id}`;
+    const lastSeen = localStorage.getItem(lastSeenKey);
+    if (pt && pt.length) {
+      const newCount = lastSeen ? pt.filter((t) => new Date(t.entry_time) > new Date(lastSeen)).length : 0;
+      setNewSignalCount(newCount);
+      localStorage.setItem(lastSeenKey, pt[0].entry_time);
+    }
   }
 
   async function parseStrategy() {
@@ -700,6 +716,10 @@ function AutoTradeTab({ session }) {
         max_risk_points: data.rules.max_risk_points ?? null,
         qty: data.rules.qty || 1,
         summary: data.rules.summary || "",
+        position_sizing_mode: "fixed_qty",
+        capital_base: null,
+        risk_pct: null,
+        lot_size: 1,
       });
     } catch (e) {
       console.error("strategy parse error:", e);
@@ -717,6 +737,8 @@ function AutoTradeTab({ session }) {
       stop_loss_type: draft.stop_loss_type, stop_loss_value: draft.stop_loss_value, stop_loss_metric: draft.stop_loss_metric,
       target_type: draft.target_type, target_value: draft.target_value, max_risk_points: draft.max_risk_points,
       qty: draft.qty, active: armed,
+      position_sizing_mode: draft.position_sizing_mode, capital_base: draft.capital_base,
+      risk_pct: draft.risk_pct, lot_size: draft.lot_size,
     });
     setSaving(false);
     setDescription(""); setDraft(null);
@@ -748,6 +770,20 @@ function AutoTradeTab({ session }) {
   return (
     <div className="content">
       <div className="banner warn">Paper trading only — no real orders are ever placed here. This simulates your strategy against live prices so you can see how it would have performed before risking real money. Requires an external scheduler hitting the engine every few minutes during market hours (see setup notes from your developer). Not investment advice.</div>
+
+      {newSignalCount > 0 && (
+        <div className="banner info">🔔 {newSignalCount} new signal{newSignalCount > 1 ? "s" : ""} triggered since you last checked. Scroll down to "Your strategies" and tap View trades.</div>
+      )}
+
+      <h2 className="section-title">Start from a template</h2>
+      <div className="card">
+        <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+          {STRATEGY_TEMPLATES.map((t) => (
+            <button key={t.label} className="ghost" style={{ width: "auto", flex: "1 1 45%" }} onClick={() => setDescription(t.text)}>{t.label}</button>
+          ))}
+        </div>
+        <div className="muted-note">These are generic starting points based on common technical patterns — edit the text below after picking one, or write your own from scratch.</div>
+      </div>
 
       <h2 className="section-title">Define a strategy</h2>
       <div className="card">
@@ -845,7 +881,25 @@ function AutoTradeTab({ session }) {
               <input type="number" value={draft.max_risk_points || ""} onChange={(e) => setDraft({ ...draft, max_risk_points: e.target.value ? parseFloat(e.target.value) : null })} placeholder="e.g. 25" />
             </div>
 
-            <div className="field"><label>Quantity</label><input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: parseFloat(e.target.value) })} /></div>
+            <div className="field">
+              <label>Position sizing</label>
+              <select value={draft.position_sizing_mode} onChange={(e) => setDraft({ ...draft, position_sizing_mode: e.target.value })}>
+                <option value="fixed_qty">Fixed quantity every trade</option>
+                <option value="risk_based">Risk a % of capital per trade (auto-sized from stop distance)</option>
+              </select>
+            </div>
+            {draft.position_sizing_mode === "fixed_qty" ? (
+              <div className="field"><label>Quantity</label><input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: parseFloat(e.target.value) })} /></div>
+            ) : (
+              <>
+                <div className="row">
+                  <div className="field"><label>Capital (₹)</label><input type="number" value={draft.capital_base || ""} onChange={(e) => setDraft({ ...draft, capital_base: parseFloat(e.target.value) })} placeholder="e.g. 100000" /></div>
+                  <div className="field"><label>Risk per trade (%)</label><input type="number" step="0.1" value={draft.risk_pct || ""} onChange={(e) => setDraft({ ...draft, risk_pct: parseFloat(e.target.value) })} placeholder="e.g. 1" /></div>
+                </div>
+                <div className="field"><label>Lot size (round position down to a multiple of this)</label><input type="number" value={draft.lot_size} onChange={(e) => setDraft({ ...draft, lot_size: parseFloat(e.target.value) })} /></div>
+                <div className="muted-note" style={{ marginTop: 0 }}>Quantity each trade = (Capital × Risk%) ÷ stop distance, rounded down to the nearest lot. If the stop is wider, size shrinks automatically — this keeps risk per trade constant even as your stop-loss varies.</div>
+              </>
+            )}
             <button className="primary" disabled={saving} onClick={() => saveStrategy(true)}>{saving ? "Saving..." : "Save & Arm (paper trading)"}</button>
             <button className="ghost" disabled={saving} onClick={() => saveStrategy(false)}>Save without arming</button>
           </div>

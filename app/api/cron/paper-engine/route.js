@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
+import { sendEmail } from "../../../../lib/sendEmail";
 
 // Called every few minutes by an external scheduler (Vercel's free tier only
 // allows once-a-day cron). This NEVER places real orders - it only simulates
@@ -166,7 +167,8 @@ export async function GET(request) {
       if (openTrade) {
         const ltp = await fetchLtp(s.instrument_key, conn.access_token);
         if (ltp) {
-          const pnl = s.direction === "long" ? (ltp - openTrade.entry_price) * s.qty : (openTrade.entry_price - ltp) * s.qty;
+          const qty = openTrade.qty || s.qty || 1;
+          const pnl = s.direction === "long" ? (ltp - openTrade.entry_price) * qty : (openTrade.entry_price - ltp) * qty;
           await supabaseAdmin.from("paper_trades").update({ status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl }).eq("id", openTrade.id);
           results.push({ strategy: s.id, action: "force_closed_eod", pnl });
         }
@@ -190,7 +192,8 @@ export async function GET(request) {
         hit = movePct <= -Math.abs(s.stop_loss_pct || 0.5) || movePct >= Math.abs(s.target_pct || 1);
       }
       if (hit) {
-        const pnl = (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * s.qty;
+        const qty = openTrade.qty || s.qty || 1;
+        const pnl = (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty;
         await supabaseAdmin.from("paper_trades").update({ status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl }).eq("id", openTrade.id);
         results.push({ strategy: s.id, action: "closed", pnl });
       } else {
@@ -249,13 +252,48 @@ export async function GET(request) {
         targetPrice = s.direction === "long" ? entryPrice * (1 + pct / 100) : entryPrice * (1 - pct / 100);
       }
 
+      // Position sizing: either a fixed quantity, or auto-calculated from
+      // how much capital the user is willing to risk vs. the stop distance.
+      let qty = s.qty || 1;
+      if (s.position_sizing_mode === "risk_based" && s.capital_base && s.risk_pct && riskPoints > 0) {
+        const lot = s.lot_size || 1;
+        const rawQty = (s.capital_base * (s.risk_pct / 100)) / riskPoints;
+        qty = Math.floor(rawQty / lot) * lot;
+        if (qty <= 0) {
+          results.push({ strategy: s.id, action: "skipped_risk_too_small", riskPoints, rawQty });
+          continue;
+        }
+      }
+
       await supabaseAdmin.from("paper_trades").insert({
         strategy_id: s.id, user_id: s.user_id, instrument_key: s.instrument_key,
         side: s.direction === "long" ? "buy" : "sell", entry_price: entryPrice,
         entry_time: new Date().toISOString(), status: "open", trade_date: today,
-        stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints,
+        stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints, qty,
       });
-      results.push({ strategy: s.id, action: "entered", price: entryPrice, stopPrice, targetPrice });
+      results.push({ strategy: s.id, action: "entered", price: entryPrice, stopPrice, targetPrice, qty });
+
+      // Fire an email alert - best-effort, never blocks the main loop.
+      try {
+        const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+        const email = userData?.user?.email;
+        if (email) {
+          await sendEmail({
+            to: email,
+            subject: `TradeLedger: "${s.name}" entry triggered`,
+            html: `<p><b>${s.name}</b> just triggered a paper entry.</p>
+                   <p>Instrument: ${s.instrument_key}<br/>
+                   Direction: ${s.direction}<br/>
+                   Entry: ${entryPrice}<br/>
+                   Stop: ${stopPrice}<br/>
+                   Target: ${targetPrice}<br/>
+                   Quantity: ${qty}</p>
+                   <p style="color:#888;font-size:12px;">This is a simulated paper trade. No real order was placed.</p>`,
+          });
+        }
+      } catch (e) {
+        console.error("email alert failed:", e);
+      }
     } else {
       results.push({ strategy: s.id, action: "waiting", metrics: currentMetrics });
     }
