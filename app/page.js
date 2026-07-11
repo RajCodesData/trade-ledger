@@ -14,6 +14,28 @@ function computePnl({ side, entryPrice, exitPrice, qty }) {
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
+// Indian financial year runs April 1 - March 31. Returns e.g. "2025-26".
+function financialYearOf(dateStr) {
+  const d = new Date(dateStr);
+  const y = d.getFullYear();
+  const startYear = d.getMonth() >= 3 ? y : y - 1; // month 3 = April
+  return `${startYear}-${String(startYear + 1).slice(2)}`;
+}
+function currentFinancialYear() {
+  return financialYearOf(new Date().toISOString());
+}
+function fyBounds(fyLabel) {
+  const startYear = parseInt(fyLabel.split("-")[0], 10);
+  return { start: new Date(startYear, 3, 1), end: new Date(startYear + 1, 2, 31, 23, 59, 59) };
+}
+function downloadCsv(filename, rows) {
+  const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
 function getWeekRange(offset) {
   const now = new Date();
   const day = now.getDay();
@@ -164,6 +186,7 @@ function Dashboard({ session }) {
       )}
       {tab === "analytics" && <AnalyticsTab trades={trades} />}
       {tab === "backtest" && <BacktestTab />}
+      {tab === "tax" && <TaxReportTab trades={trades} />}
       {tab === "broker" && <BrokerTab session={session} onSynced={loadAll} />}
 
       <div className="bottom-nav">
@@ -172,6 +195,7 @@ function Dashboard({ session }) {
           ["guardrails", "🛡️", "Guardrails"],
           ["analytics", "📊", "Analytics"],
           ["backtest", "🧪", "Backtest"],
+          ["tax", "🧾", "Tax"],
           ["broker", "🔗", "Broker"],
         ].map(([id, icon, label]) => (
           <button key={id} className={"nav-btn" + (tab === id ? " active" : "")} onClick={() => setTab(id)}>
@@ -187,10 +211,12 @@ function Dashboard({ session }) {
 function JournalTab({ trades, todayPnl, limit, user, onSaved }) {
   const [instrument, setInstrument] = useState("");
   const [side, setSide] = useState("buy");
+  const [segment, setSegment] = useState("equity_intraday");
   const [entryPrice, setEntryPrice] = useState("");
   const [exitPrice, setExitPrice] = useState("");
   const [qty, setQty] = useState("");
   const [time, setTime] = useState(() => new Date().toISOString().slice(0, 16));
+  const [exitDate, setExitDate] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [confirmBreach, setConfirmBreach] = useState(false);
@@ -221,11 +247,13 @@ function JournalTab({ trades, todayPnl, limit, user, onSaved }) {
     const pnl = computePnl({ side, entryPrice: ep, exitPrice: xp, qty: q });
     const { error: err } = await supabase.from("trades").insert({
       user_id: user.id, instrument: instrument.trim(), side, entry_price: ep, exit_price: xp,
-      qty: q, entry_time: new Date(time).toISOString(), notes, pnl, source: "manual",
+      qty: q, entry_time: new Date(time).toISOString(),
+      exit_time: exitDate ? new Date(exitDate).toISOString() : new Date(time).toISOString(),
+      notes, pnl, source: "manual", segment,
     });
     setSaving(false);
     if (err) { setError(err.message); return; }
-    setInstrument(""); setEntryPrice(""); setExitPrice(""); setQty(""); setNotes(""); setConfirmBreach(false);
+    setInstrument(""); setEntryPrice(""); setExitPrice(""); setQty(""); setNotes(""); setConfirmBreach(false); setExitDate("");
     setTime(new Date().toISOString().slice(0, 16));
     onSaved();
   }
@@ -254,6 +282,15 @@ function JournalTab({ trades, todayPnl, limit, user, onSaved }) {
             </select>
           </div>
         </div>
+        <div className="field">
+          <label>Segment (for tax classification)</label>
+          <select value={segment} onChange={(e) => setSegment(e.target.value)}>
+            <option value="equity_intraday">Equity — Intraday</option>
+            <option value="equity_delivery">Equity — Delivery</option>
+            <option value="futures">Futures</option>
+            <option value="options">Options</option>
+          </select>
+        </div>
         {showInstrumentWarning && (
           <div className="banner warn">⚠️ You've traded <b>{instrument}</b> {warnStats.count} times with a net loss of {fmt(Math.abs(warnStats.net))} (win rate {warnStats.winRate}%). Consider skipping it or revisiting your rules before this trade.</div>
         )}
@@ -265,6 +302,12 @@ function JournalTab({ trades, todayPnl, limit, user, onSaved }) {
           <div className="field"><label>Quantity</label><input type="number" value={qty} onChange={(e) => setQty(e.target.value)} /></div>
           <div className="field"><label>Entry time</label><input type="datetime-local" value={time} onChange={(e) => setTime(e.target.value)} /></div>
         </div>
+        {segment === "equity_delivery" && (
+          <div className="field">
+            <label>Exit date (if different from entry — affects short vs long-term tax)</label>
+            <input type="date" value={exitDate} onChange={(e) => setExitDate(e.target.value)} />
+          </div>
+        )}
         <div className="field">
           <label>Notes (setup, reasoning, mistake if any)</label>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="What was the plan? Did you follow it?" />
@@ -503,7 +546,108 @@ function BacktestTab() {
   );
 }
 
-// ---------- BROKER TAB ----------
+// ---------- TAX REPORT TAB ----------
+// Rates below reflect FY 2025-26 / AY 2026-27 as confirmed post Union Budget 2026.
+// STCG (equity, Sec 111A): 20% flat, no exemption.
+// LTCG (equity, held > 12 months): 12.5% on gains above Rs 1,25,000/year, no indexation.
+// Speculative business income (equity intraday) and non-speculative (F&O) are taxed
+// at the trader's income slab rate, not a flat rate - so we show net profit/loss only.
+// Tax audit trigger (Sec 44AB, simplified): F&O turnover > Rs 10 crore, OR profit < 6%
+// of turnover while total income exceeds the basic exemption limit.
+const STCG_RATE = 0.20;
+const LTCG_RATE = 0.125;
+const LTCG_EXEMPTION = 125000;
+const CESS_RATE = 0.04;
+
+function TaxReportTab({ trades }) {
+  const availableFYs = Array.from(new Set(trades.map((t) => financialYearOf(t.entry_time)))).sort().reverse();
+  const [fy, setFy] = useState(availableFYs[0] || currentFinancialYear());
+  const { start, end } = fyBounds(fy);
+  const fyTrades = trades.filter((t) => {
+    const d = new Date(t.entry_time);
+    return d >= start && d <= end;
+  });
+
+  const speculative = fyTrades.filter((t) => t.segment === "equity_intraday");
+  const fno = fyTrades.filter((t) => t.segment === "futures" || t.segment === "options");
+  const delivery = fyTrades.filter((t) => t.segment === "equity_delivery");
+
+  const speculativePnl = speculative.reduce((s, t) => s + t.pnl, 0);
+  const fnoPnl = fno.reduce((s, t) => s + t.pnl, 0);
+  const fnoTurnover = fno.reduce((s, t) => s + Math.abs(t.pnl), 0);
+  const auditFlag = fnoTurnover > 100000000 || (fnoTurnover > 0 && fnoPnl < fnoTurnover * 0.06);
+
+  let stcgTotal = 0, ltcgTotal = 0;
+  delivery.forEach((t) => {
+    const exit = t.exit_time ? new Date(t.exit_time) : new Date(t.entry_time);
+    const entry = new Date(t.entry_time);
+    const holdingDays = (exit - entry) / (1000 * 60 * 60 * 24);
+    if (holdingDays > 365) ltcgTotal += t.pnl; else stcgTotal += t.pnl;
+  });
+  const stcgTax = stcgTotal > 0 ? stcgTotal * STCG_RATE : 0;
+  const ltcgTaxable = Math.max(0, ltcgTotal - LTCG_EXEMPTION);
+  const ltcgTax = ltcgTaxable * LTCG_RATE;
+  const capGainsCess = (stcgTax + ltcgTax) * CESS_RATE;
+
+  function exportCsv() {
+    const rows = [["Date", "Instrument", "Segment", "Side", "Qty", "Entry Price", "Exit Price", "P&L", "Source"]];
+    fyTrades.forEach((t) => {
+      rows.push([new Date(t.entry_time).toLocaleDateString("en-IN"), t.instrument, t.segment, t.side, t.qty, t.entry_price, t.exit_price, t.pnl.toFixed(2), t.source]);
+    });
+    downloadCsv(`tradeledger-tax-fy${fy}.csv`, rows);
+  }
+
+  return (
+    <div className="content">
+      <div className="banner warn">This is a simplified estimate for planning purposes only, based on rates for FY 2025-26 (AY 2026-27). It is not tax advice. Please confirm final figures with a Chartered Accountant before filing, especially for audit applicability and loss carry-forward.</div>
+
+      <div className="week-nav">
+        <span className="week-label">Financial Year</span>
+        <select value={fy} onChange={(e) => setFy(e.target.value)} style={{ width: "auto" }}>
+          {(availableFYs.length ? availableFYs : [currentFinancialYear()]).map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
+      </div>
+
+      <h2 className="section-title">Speculative business income (equity intraday)</h2>
+      <div className="card">
+        <div className="row">
+          <div><div className="trade-meta">Trades</div><div className="pnl">{speculative.length}</div></div>
+          <div><div className="trade-meta">Net P&L</div><div className={"pnl " + (speculativePnl >= 0 ? "pos" : "neg")}>{fmt(speculativePnl)}</div></div>
+        </div>
+        <div className="muted-note">Taxed at your income slab rate. Losses can only be set off against other speculative income, and carried forward up to 4 years.</div>
+      </div>
+
+      <h2 className="section-title">Non-speculative business income (F&O)</h2>
+      <div className="card">
+        <div className="row">
+          <div><div className="trade-meta">Trades</div><div className="pnl">{fno.length}</div></div>
+          <div><div className="trade-meta">Net P&L</div><div className={"pnl " + (fnoPnl >= 0 ? "pos" : "neg")}>{fmt(fnoPnl)}</div></div>
+        </div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <div><div className="trade-meta">Turnover (audit basis)</div><div className="pnl">{fmt(fnoTurnover)}</div></div>
+          <div><div className="trade-meta">Audit likely required</div><div className="pnl" style={{ color: auditFlag ? "var(--loss)" : "var(--profit)" }}>{auditFlag ? "Yes" : "No"}</div></div>
+        </div>
+        <div className="muted-note">Taxed at your income slab rate. Losses can be set off against most other income (except salary), carried forward up to 8 years. Audit trigger: turnover over ₹10 crore, or profit under 6% of turnover.</div>
+      </div>
+
+      <h2 className="section-title">Capital gains (equity delivery)</h2>
+      <div className="card">
+        <div className="stat-grid">
+          <div className="stat-box"><div className="label">STCG (≤12mo)</div><div className="value" style={{ color: stcgTotal >= 0 ? "var(--profit)" : "var(--loss)" }}>{fmt(stcgTotal)}</div></div>
+          <div className="stat-box"><div className="label">STCG tax (20%)</div><div className="value">{fmt(stcgTax)}</div></div>
+          <div className="stat-box"><div className="label">LTCG (&gt;12mo)</div><div className="value" style={{ color: ltcgTotal >= 0 ? "var(--profit)" : "var(--loss)" }}>{fmt(ltcgTotal)}</div></div>
+          <div className="stat-box"><div className="label">LTCG tax (12.5% over ₹1.25L)</div><div className="value">{fmt(ltcgTax)}</div></div>
+        </div>
+        <div className="muted-note">Estimated cess (4%) on capital gains tax: {fmt(capGainsCess)}. Estimated total capital gains tax + cess: {fmt(stcgTax + ltcgTax + capGainsCess)}.</div>
+        <div className="muted-note">Holding period is based on entry/exit dates logged in your journal. Multi-day delivery positions synced automatically from your broker may not capture the true original purchase date — double check these manually.</div>
+      </div>
+
+      <button className="ghost" onClick={exportCsv}>Download this FY's trades as CSV (for your CA)</button>
+    </div>
+  );
+}
+
+
 function BrokerTab({ session, onSynced }) {
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");

@@ -6,6 +6,16 @@ import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 // so we match BUY fills against SELL fills per instrument, FIFO, within the
 // same day. This covers same-day intraday trading, which is the common case
 // for auto-journaling. Multi-day swing trades aren't matched by this v1.
+// Classifies a trade for tax purposes based on its symbol and product code.
+// Options symbols end in CE/PE, futures end in FUT, everything else is equity.
+// Product "D" = delivery, anything else (I, CO, MTF) is treated as intraday.
+function classifySegment(symbol, product) {
+  if (/(CE|PE)$/.test(symbol)) return "options";
+  if (/FUT$/.test(symbol)) return "futures";
+  if (product === "D") return "equity_delivery";
+  return "equity_intraday";
+}
+
 function matchFillsToTrades(fills, userId) {
   const byInstrument = {};
   fills.forEach((f) => {
@@ -17,6 +27,7 @@ function matchFillsToTrades(fills, userId) {
   const results = [];
   for (const [instrument, list] of Object.entries(byInstrument)) {
     list.sort((a, b) => new Date(a.exchange_timestamp) - new Date(b.exchange_timestamp));
+    const segment = classifySegment(instrument, list[0]?.product);
     const buys = list.filter((f) => f.transaction_type === "BUY").map((f) => ({ ...f, remaining: f.quantity }));
     const sells = list.filter((f) => f.transaction_type === "SELL").map((f) => ({ ...f, remaining: f.quantity }));
 
@@ -34,9 +45,11 @@ function matchFillsToTrades(fills, userId) {
           exit_price: buyFirst ? s.average_price : b.average_price,
           qty: matchQty,
           entry_time: buyFirst ? b.exchange_timestamp : s.exchange_timestamp,
+          exit_time: buyFirst ? s.exchange_timestamp : b.exchange_timestamp,
           notes: "Auto-synced from Upstox",
           pnl: (s.average_price - b.average_price) * matchQty,
           source: "upstox",
+          segment,
         });
         b.remaining -= matchQty;
         s.remaining -= matchQty;
