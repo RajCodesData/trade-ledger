@@ -679,10 +679,31 @@ function AutoTradeTab({ session }) {
     try {
       const res = await fetch("/api/strategy/parse", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description }) });
       const data = await res.json();
+      console.log("strategy parse response:", data);
+      if (!res.ok) { setParseError(`Server error (${res.status}). Check the browser console for details.`); setParsing(false); return; }
       if (data.error) { setParseError(data.error); setParsing(false); return; }
-      setDraft(data.rules);
+      if (!data.rules || !Array.isArray(data.rules.entry_conditions)) {
+        setParseError("The AI response didn't match the expected format. Check the browser console (F12) for the raw response and share it.");
+        setParsing(false);
+        return;
+      }
+      setDraft({
+        direction: data.rules.direction || "long",
+        entry_conditions: data.rules.entry_conditions || [],
+        window_start: data.rules.window_start || "09:15",
+        window_end: data.rules.window_end || "15:15",
+        stop_loss_type: data.rules.stop_loss_type || "percent",
+        stop_loss_value: data.rules.stop_loss_value ?? 0.5,
+        stop_loss_metric: data.rules.stop_loss_metric || "",
+        target_type: data.rules.target_type || "percent",
+        target_value: data.rules.target_value ?? 1,
+        max_risk_points: data.rules.max_risk_points ?? null,
+        qty: data.rules.qty || 1,
+        summary: data.rules.summary || "",
+      });
     } catch (e) {
-      setParseError("Could not reach the parsing service.");
+      console.error("strategy parse error:", e);
+      setParseError("Could not reach the parsing service. Check the browser console for details.");
     }
     setParsing(false);
   }
