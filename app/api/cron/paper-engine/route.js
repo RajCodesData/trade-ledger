@@ -92,6 +92,8 @@ function getMetric(name, ctx) {
   if (name === "day_open") return ctx.dayOpen;
   if (name === "prev_day_high") return ctx.prevHigh;
   if (name === "prev_day_low") return ctx.prevLow;
+  if (name === "prev_candle_high") return ctx.prevCandleHigh;
+  if (name === "prev_candle_low") return ctx.prevCandleLow;
   let m;
   if ((m = /^sma_(\d+)$/.exec(name))) return sma(ctx.closes, parseInt(m[1]));
   if ((m = /^ema_(\d+)$/.exec(name))) return ema(ctx.closes, parseInt(m[1]));
@@ -176,10 +178,19 @@ export async function GET(request) {
     if (openTrade) {
       const ltp = await fetchLtp(s.instrument_key, conn.access_token);
       if (!ltp) { results.push({ strategy: s.id, skipped: "no ltp" }); continue; }
-      const moveFavorable = s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp;
-      const movePct = (moveFavorable / openTrade.entry_price) * 100;
-      if (movePct <= -Math.abs(s.stop_loss_pct) || movePct >= Math.abs(s.target_pct)) {
-        const pnl = moveFavorable * s.qty;
+      let hit = false;
+      if (openTrade.stop_price != null && openTrade.target_price != null) {
+        hit = s.direction === "long"
+          ? (ltp <= openTrade.stop_price || ltp >= openTrade.target_price)
+          : (ltp >= openTrade.stop_price || ltp <= openTrade.target_price);
+      } else {
+        // Fallback for trades opened before this update - percent-based check.
+        const moveFavorable = s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp;
+        const movePct = (moveFavorable / openTrade.entry_price) * 100;
+        hit = movePct <= -Math.abs(s.stop_loss_pct || 0.5) || movePct >= Math.abs(s.target_pct || 1);
+      }
+      if (hit) {
+        const pnl = (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * s.qty;
         await supabaseAdmin.from("paper_trades").update({ status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl }).eq("id", openTrade.id);
         results.push({ strategy: s.id, action: "closed", pnl });
       } else {
@@ -198,9 +209,12 @@ export async function GET(request) {
       dayOpen: candles[0]?.open ?? null,
       prevHigh: prevLevels?.high ?? null,
       prevLow: prevLevels?.low ?? null,
+      prevCandleHigh: candles.length >= 2 ? candles[candles.length - 2].high : null,
+      prevCandleLow: candles.length >= 2 ? candles[candles.length - 2].low : null,
     };
 
     const metricNames = collectMetricNames(s.entry_conditions);
+    if (s.stop_loss_type === "candle_metric" && s.stop_loss_metric) metricNames.push(s.stop_loss_metric);
     const currentMetrics = computeAllMetrics(metricNames, ctx);
     const previousMetrics = s.last_metrics || {};
 
@@ -210,12 +224,38 @@ export async function GET(request) {
 
     if (allMet) {
       const entryPrice = currentMetrics.price ?? closes[closes.length - 1];
+
+      let stopPrice;
+      if (s.stop_loss_type === "candle_metric" && s.stop_loss_metric) {
+        stopPrice = currentMetrics[s.stop_loss_metric];
+      } else {
+        const pct = s.stop_loss_value ?? s.stop_loss_pct ?? 0.5;
+        stopPrice = s.direction === "long" ? entryPrice * (1 - pct / 100) : entryPrice * (1 + pct / 100);
+      }
+      if (stopPrice == null) { results.push({ strategy: s.id, skipped: "stop-loss reference metric unavailable" }); continue; }
+
+      const riskPoints = Math.abs(entryPrice - stopPrice);
+      if (s.max_risk_points && riskPoints > s.max_risk_points) {
+        results.push({ strategy: s.id, action: "skipped_risk_too_large", riskPoints });
+        continue;
+      }
+
+      let targetPrice;
+      if (s.target_type === "r_multiple") {
+        const multiple = s.target_value ?? 5;
+        targetPrice = s.direction === "long" ? entryPrice + riskPoints * multiple : entryPrice - riskPoints * multiple;
+      } else {
+        const pct = s.target_value ?? s.target_pct ?? 1;
+        targetPrice = s.direction === "long" ? entryPrice * (1 + pct / 100) : entryPrice * (1 - pct / 100);
+      }
+
       await supabaseAdmin.from("paper_trades").insert({
         strategy_id: s.id, user_id: s.user_id, instrument_key: s.instrument_key,
         side: s.direction === "long" ? "buy" : "sell", entry_price: entryPrice,
         entry_time: new Date().toISOString(), status: "open", trade_date: today,
+        stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints,
       });
-      results.push({ strategy: s.id, action: "entered", price: entryPrice, metrics: currentMetrics });
+      results.push({ strategy: s.id, action: "entered", price: entryPrice, stopPrice, targetPrice });
     } else {
       results.push({ strategy: s.id, action: "waiting", metrics: currentMetrics });
     }

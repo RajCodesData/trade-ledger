@@ -693,7 +693,9 @@ function AutoTradeTab({ session }) {
       user_id: user.id, name: description.slice(0, 60), description,
       instrument_key: instrumentKey, direction: draft.direction,
       entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end,
-      stop_loss_pct: draft.stop_loss_pct, target_pct: draft.target_pct, qty: draft.qty, active: armed,
+      stop_loss_type: draft.stop_loss_type, stop_loss_value: draft.stop_loss_value, stop_loss_metric: draft.stop_loss_metric,
+      target_type: draft.target_type, target_value: draft.target_value, max_risk_points: draft.max_risk_points,
+      qty: draft.qty, active: armed,
     });
     setSaving(false);
     setDescription(""); setDraft(null);
@@ -791,10 +793,37 @@ function AutoTradeTab({ session }) {
               <div className="field"><label>Window start</label><input value={draft.window_start} onChange={(e) => setDraft({ ...draft, window_start: e.target.value })} /></div>
               <div className="field"><label>Window end</label><input value={draft.window_end} onChange={(e) => setDraft({ ...draft, window_end: e.target.value })} /></div>
             </div>
-            <div className="row">
-              <div className="field"><label>Stop loss %</label><input type="number" step="0.1" value={draft.stop_loss_pct} onChange={(e) => setDraft({ ...draft, stop_loss_pct: parseFloat(e.target.value) })} /></div>
-              <div className="field"><label>Target %</label><input type="number" step="0.1" value={draft.target_pct} onChange={(e) => setDraft({ ...draft, target_pct: parseFloat(e.target.value) })} /></div>
+
+            <div className="field">
+              <label>Stop-loss type</label>
+              <select value={draft.stop_loss_type} onChange={(e) => setDraft({ ...draft, stop_loss_type: e.target.value })}>
+                <option value="percent">Fixed percent from entry</option>
+                <option value="candle_metric">A price level (e.g. previous candle's high/low)</option>
+              </select>
             </div>
+            {draft.stop_loss_type === "percent" ? (
+              <div className="field"><label>Stop loss %</label><input type="number" step="0.1" value={draft.stop_loss_value} onChange={(e) => setDraft({ ...draft, stop_loss_value: parseFloat(e.target.value) })} /></div>
+            ) : (
+              <div className="field"><label>Stop-loss metric</label><input value={draft.stop_loss_metric || ""} onChange={(e) => setDraft({ ...draft, stop_loss_metric: e.target.value })} placeholder="prev_candle_high or prev_candle_low" /></div>
+            )}
+
+            <div className="field">
+              <label>Target type</label>
+              <select value={draft.target_type} onChange={(e) => setDraft({ ...draft, target_type: e.target.value })}>
+                <option value="percent">Fixed percent from entry</option>
+                <option value="r_multiple">Risk multiple (e.g. 5 = 1:5 risk:reward)</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>{draft.target_type === "r_multiple" ? "Risk multiple" : "Target %"}</label>
+              <input type="number" step="0.1" value={draft.target_value} onChange={(e) => setDraft({ ...draft, target_value: parseFloat(e.target.value) })} />
+            </div>
+
+            <div className="field">
+              <label>Max risk in points (optional — skip trade if stop distance exceeds this)</label>
+              <input type="number" value={draft.max_risk_points || ""} onChange={(e) => setDraft({ ...draft, max_risk_points: e.target.value ? parseFloat(e.target.value) : null })} placeholder="e.g. 25" />
+            </div>
+
             <div className="field"><label>Quantity</label><input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: parseFloat(e.target.value) })} /></div>
             <button className="primary" disabled={saving} onClick={() => saveStrategy(true)}>{saving ? "Saving..." : "Save & Arm (paper trading)"}</button>
             <button className="ghost" disabled={saving} onClick={() => saveStrategy(false)}>Save without arming</button>

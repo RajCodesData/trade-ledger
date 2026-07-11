@@ -7,27 +7,33 @@ The JSON must match this exact shape:
   "direction": "long" | "short",
   "entry_conditions": [
     {
-      "metric": string,       // one of: "price", "vwap", "day_open", "prev_day_high", "prev_day_low", or "sma_N" / "ema_N" / "rsi_N" where N is a period like 9, 20, 50, 14
+      "metric": string,       // one of: "price", "vwap", "day_open", "prev_day_high", "prev_day_low", "prev_candle_high", "prev_candle_low", or "sma_N" / "ema_N" / "rsi_N" where N is a period like 9, 20, 50, 14
       "comparator": "above" | "below" | "crosses_above" | "crosses_below",
       "value_type": "number" | "metric",
-      "value": number or metric-name-string   // matches value_type
+      "value": number or metric-name-string
     }
-  ],   // ALL conditions must be true at the same time for entry to trigger (AND logic). Use 1-3 conditions - don't overcomplicate.
-  "window_start": "HH:MM",   // 24hr, default "09:15"
-  "window_end": "HH:MM",     // default "15:15"
-  "stop_loss_pct": number,   // percent, positive number e.g. 0.5
-  "target_pct": number,      // percent, positive number
-  "qty": number,             // default 1 if not specified
-  "summary": "one plain-English sentence restating the parsed rule"
+  ],
+  "window_start": "HH:MM",
+  "window_end": "HH:MM",
+  "stop_loss_type": "percent" | "candle_metric",
+  "stop_loss_value": number,       // percent, only used when stop_loss_type is "percent"
+  "stop_loss_metric": string,      // e.g. "prev_candle_high" or "prev_candle_low", only used when stop_loss_type is "candle_metric"
+  "target_type": "percent" | "r_multiple",
+  "target_value": number,          // percent if target_type is "percent", or the R-multiple (e.g. 5 for a 1:5 risk:reward) if "r_multiple"
+  "max_risk_points": number or null,  // skip the trade if the stop distance in price points exceeds this; null if no such filter was mentioned
+  "qty": number,
+  "summary": "one plain-English sentence restating the parsed rule, and mention explicitly if any part of the original strategy could not be captured (e.g. trading options instead of the index, or vague volatility filters)"
 }
 
-Examples of metric usage:
-- "price crosses above the 20-period moving average" -> {"metric":"price","comparator":"crosses_above","value_type":"metric","value":"sma_20"}
-- "RSI drops below 30" -> {"metric":"rsi_14","comparator":"below","value_type":"number","value":30}
-- "price above VWAP" -> {"metric":"price","comparator":"above","value_type":"metric","value":"vwap"}
-- "9 EMA crosses above 21 EMA" -> {"metric":"ema_9","comparator":"crosses_above","value_type":"metric","value":"ema_21"}
-
-If the strategy is ambiguous, make a reasonable interpretation and say so in the summary. If information is missing, use sensible defaults (qty 1, window 09:15-15:15, stop_loss_pct 0.5, target_pct 1, rsi_14 for plain "RSI").`;
+Guidance:
+- "previous candle's low/high" -> use metric "prev_candle_low" / "prev_candle_high" (NOT prev_day_low/high, which is the whole prior day).
+- A stop-loss described as a specific level (e.g. "at the previous candle's high") -> stop_loss_type "candle_metric", stop_loss_metric set accordingly.
+- A stop-loss described as a percent (e.g. "0.5% below entry") -> stop_loss_type "percent", stop_loss_value set.
+- A target described as a risk multiple (e.g. "5 times the risk", "1:5 risk reward") -> target_type "r_multiple", target_value = the multiple.
+- A target described as a percent -> target_type "percent", target_value set.
+- If the strategy says to trade an option (e.g. "buy the ATM put") while the entry logic is based on the underlying index/stock, note this in the summary as NOT currently supported - the engine will paper-trade the underlying instrument itself, not an option contract, and this must be flagged, not silently ignored.
+- Vague filters like "market is highly volatile" or "already made a large impulsive move" cannot be reliably quantified - omit them from entry_conditions and mention in the summary that they were not included.
+- Use sensible defaults for anything unspecified: qty 1, window 09:15-15:15, stop_loss_type "percent" with stop_loss_value 0.5, target_type "percent" with target_value 1.`;
 
 export async function POST(request) {
   const { description } = await request.json();
