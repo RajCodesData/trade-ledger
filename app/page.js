@@ -187,6 +187,7 @@ function Dashboard({ session }) {
       {tab === "analytics" && <AnalyticsTab trades={trades} />}
       {tab === "backtest" && <BacktestTab />}
       {tab === "tax" && <TaxReportTab trades={trades} />}
+      {tab === "auto" && <AutoTradeTab session={session} />}
       {tab === "broker" && <BrokerTab session={session} onSynced={loadAll} />}
 
       <div className="bottom-nav">
@@ -196,6 +197,7 @@ function Dashboard({ session }) {
           ["analytics", "📊", "Analytics"],
           ["backtest", "🧪", "Backtest"],
           ["tax", "🧾", "Tax"],
+          ["auto", "🤖", "Auto"],
           ["broker", "🔗", "Broker"],
         ].map(([id, icon, label]) => (
           <button key={id} className={"nav-btn" + (tab === id ? " active" : "")} onClick={() => setTab(id)}>
@@ -647,6 +649,206 @@ function TaxReportTab({ trades }) {
   );
 }
 
+
+// ---------- AUTO-TRADE TAB (paper trading only) ----------
+function AutoTradeTab({ session }) {
+  const user = session.user;
+  const [strategies, setStrategies] = useState([]);
+  const [paperTrades, setPaperTrades] = useState([]);
+  const [description, setDescription] = useState("");
+  const [instrumentKey, setInstrumentKey] = useState("NSE_INDEX|Nifty 50");
+  const [parsing, setParsing] = useState(false);
+  const [parseError, setParseError] = useState("");
+  const [draft, setDraft] = useState(null); // parsed rules pending confirmation
+  const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+
+  useEffect(() => { load(); }, []);
+
+  async function load() {
+    const { data: s } = await supabase.from("strategies").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
+    setStrategies(s || []);
+    const { data: pt } = await supabase.from("paper_trades").select("*").eq("user_id", user.id).order("entry_time", { ascending: false });
+    setPaperTrades(pt || []);
+  }
+
+  async function parseStrategy() {
+    setParseError(""); setDraft(null);
+    if (!description.trim()) { setParseError("Describe your strategy first."); return; }
+    setParsing(true);
+    try {
+      const res = await fetch("/api/strategy/parse", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description }) });
+      const data = await res.json();
+      if (data.error) { setParseError(data.error); setParsing(false); return; }
+      setDraft(data.rules);
+    } catch (e) {
+      setParseError("Could not reach the parsing service.");
+    }
+    setParsing(false);
+  }
+
+  async function saveStrategy(armed) {
+    setSaving(true);
+    await supabase.from("strategies").insert({
+      user_id: user.id, name: description.slice(0, 60), description,
+      instrument_key: instrumentKey, direction: draft.direction,
+      entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end,
+      stop_loss_pct: draft.stop_loss_pct, target_pct: draft.target_pct, qty: draft.qty, active: armed,
+    });
+    setSaving(false);
+    setDescription(""); setDraft(null);
+    load();
+  }
+
+  function updateCondition(i, patch) {
+    const conds = [...draft.entry_conditions];
+    conds[i] = { ...conds[i], ...patch };
+    setDraft({ ...draft, entry_conditions: conds });
+  }
+  function addCondition() {
+    setDraft({ ...draft, entry_conditions: [...draft.entry_conditions, { metric: "price", comparator: "above", value_type: "metric", value: "vwap" }] });
+  }
+  function removeCondition(i) {
+    setDraft({ ...draft, entry_conditions: draft.entry_conditions.filter((_, idx) => idx !== i) });
+  }
+
+  async function toggleActive(s) {
+    await supabase.from("strategies").update({ active: !s.active }).eq("id", s.id);
+    load();
+  }
+
+  async function deleteStrategy(id) {
+    await supabase.from("strategies").delete().eq("id", id);
+    load();
+  }
+
+  return (
+    <div className="content">
+      <div className="banner warn">Paper trading only — no real orders are ever placed here. This simulates your strategy against live prices so you can see how it would have performed before risking real money. Requires an external scheduler hitting the engine every few minutes during market hours (see setup notes from your developer). Not investment advice.</div>
+
+      <h2 className="section-title">Define a strategy</h2>
+      <div className="card">
+        <div className="field">
+          <label>Instrument key</label>
+          <input value={instrumentKey} onChange={(e) => setInstrumentKey(e.target.value)} placeholder="e.g. NSE_INDEX|Nifty 50" />
+          <div className="muted-note">Use "NSE_INDEX|Nifty 50" or "NSE_INDEX|Nifty Bank" for indices. For individual stocks, ask your developer to look up the exact instrument key from Upstox's instrument master file.</div>
+        </div>
+        <div className="field">
+          <label>Describe your strategy in plain English</label>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Buy NIFTY if it breaks above yesterday's high before 10am, stop loss 0.5%, target 1%, quantity 50" />
+        </div>
+        {parseError && <div className="error-text">{parseError}</div>}
+        <button className="primary" disabled={parsing} onClick={parseStrategy}>{parsing ? "Parsing..." : "Parse with AI"}</button>
+
+        {draft && (
+          <div className="card" style={{ marginTop: 12, background: "var(--surface2)" }}>
+            <div className="muted-note" style={{ marginTop: 0 }}>{draft.summary}</div>
+            <div className="field">
+              <label>Direction</label>
+              <select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value })}>
+                <option value="long">Long</option><option value="short">Short</option>
+              </select>
+            </div>
+
+            <label style={{ display: "block", fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>Entry conditions (all must be true)</label>
+            {draft.entry_conditions.map((c, i) => (
+              <div className="card" key={i} style={{ padding: 10, marginBottom: 8, background: "var(--surface)" }}>
+                <div className="row">
+                  <div className="field">
+                    <label>Metric</label>
+                    <input value={c.metric} onChange={(e) => updateCondition(i, { metric: e.target.value })} placeholder="price, vwap, sma_20, rsi_14..." />
+                  </div>
+                  <div className="field">
+                    <label>Comparator</label>
+                    <select value={c.comparator} onChange={(e) => updateCondition(i, { comparator: e.target.value })}>
+                      <option value="above">Above</option>
+                      <option value="below">Below</option>
+                      <option value="crosses_above">Crosses above</option>
+                      <option value="crosses_below">Crosses below</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="row">
+                  <div className="field">
+                    <label>Compare to</label>
+                    <select value={c.value_type} onChange={(e) => updateCondition(i, { value_type: e.target.value })}>
+                      <option value="number">A number</option>
+                      <option value="metric">Another metric</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Value</label>
+                    <input value={c.value} onChange={(e) => updateCondition(i, { value: c.value_type === "number" ? parseFloat(e.target.value) : e.target.value })} placeholder={c.value_type === "number" ? "30" : "sma_20"} />
+                  </div>
+                </div>
+                <button className="ghost" style={{ color: "var(--loss)" }} onClick={() => removeCondition(i)}>Remove condition</button>
+              </div>
+            ))}
+            <button className="ghost" onClick={addCondition}>+ Add another condition</button>
+            <div className="muted-note">Metrics: price, vwap, day_open, prev_day_high, prev_day_low, sma_N, ema_N, rsi_N (e.g. sma_20, ema_9, rsi_14)</div>
+
+            <div className="row" style={{ marginTop: 10 }}>
+              <div className="field"><label>Window start</label><input value={draft.window_start} onChange={(e) => setDraft({ ...draft, window_start: e.target.value })} /></div>
+              <div className="field"><label>Window end</label><input value={draft.window_end} onChange={(e) => setDraft({ ...draft, window_end: e.target.value })} /></div>
+            </div>
+            <div className="row">
+              <div className="field"><label>Stop loss %</label><input type="number" step="0.1" value={draft.stop_loss_pct} onChange={(e) => setDraft({ ...draft, stop_loss_pct: parseFloat(e.target.value) })} /></div>
+              <div className="field"><label>Target %</label><input type="number" step="0.1" value={draft.target_pct} onChange={(e) => setDraft({ ...draft, target_pct: parseFloat(e.target.value) })} /></div>
+            </div>
+            <div className="field"><label>Quantity</label><input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: parseFloat(e.target.value) })} /></div>
+            <button className="primary" disabled={saving} onClick={() => saveStrategy(true)}>{saving ? "Saving..." : "Save & Arm (paper trading)"}</button>
+            <button className="ghost" disabled={saving} onClick={() => saveStrategy(false)}>Save without arming</button>
+          </div>
+        )}
+      </div>
+
+      <h2 className="section-title">Your strategies</h2>
+      {strategies.length === 0 ? (
+        <div className="card"><div className="empty-state">No strategies yet. Define one above.</div></div>
+      ) : (
+        strategies.map((s) => {
+          const trades = paperTrades.filter((t) => t.strategy_id === s.id);
+          const closed = trades.filter((t) => t.status === "closed");
+          const net = closed.reduce((sum, t) => sum + (t.pnl || 0), 0);
+          const wins = closed.filter((t) => (t.pnl || 0) > 0).length;
+          return (
+            <div className="card" key={s.id}>
+              <div className="row">
+                <div>
+                  <div className="trade-instr">{s.name}</div>
+                  <div className="trade-meta">{s.instrument_key} · {s.direction} · {(s.entry_conditions || []).map((c) => `${c.metric} ${c.comparator.replace(/_/g, " ")} ${c.value}`).join(" AND ")}</div>
+                </div>
+                <button className="pill" style={{ color: s.active ? "var(--profit)" : "var(--muted)" }} onClick={() => toggleActive(s)}>
+                  {s.active ? "Armed" : "Paused"}
+                </button>
+              </div>
+              <div className="row" style={{ marginTop: 10 }}>
+                <div><div className="trade-meta">Paper trades</div><div className="pnl">{closed.length}</div></div>
+                <div><div className="trade-meta">Win rate</div><div className="pnl">{closed.length ? Math.round((wins / closed.length) * 100) : 0}%</div></div>
+                <div><div className="trade-meta">Net (simulated)</div><div className={"pnl " + (net >= 0 ? "pos" : "neg")}>{fmt(net)}</div></div>
+              </div>
+              <button className="ghost" onClick={() => setExpanded(expanded === s.id ? null : s.id)}>{expanded === s.id ? "Hide trades" : "View trades"}</button>
+              {expanded === s.id && (
+                <div style={{ marginTop: 10 }}>
+                  {trades.length === 0 ? <div className="muted-note">No paper trades logged yet.</div> : trades.map((t) => (
+                    <div className="trade-row" key={t.id}>
+                      <div>
+                        <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price}</div>
+                        <div className="trade-meta">{new Date(t.entry_time).toLocaleString("en-IN")} {t.status === "closed" ? `→ ${t.exit_price}` : "(open)"}</div>
+                      </div>
+                      <div className={"pnl " + ((t.pnl || 0) >= 0 ? "pos" : "neg")}>{t.pnl != null ? fmt(t.pnl) : "—"}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button className="ghost" style={{ color: "var(--loss)", marginTop: 8 }} onClick={() => deleteStrategy(s.id)}>Delete strategy</button>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
 
 function BrokerTab({ session, onSynced }) {
   const [syncing, setSyncing] = useState(false);
