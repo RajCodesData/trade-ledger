@@ -656,6 +656,7 @@ const STRATEGY_TEMPLATES = [
   { label: "RSI reversal", text: "Buy NIFTY when RSI drops below 30 (oversold) and then price is above VWAP. Stop loss 0.5%, target 1%, quantity 50." },
   { label: "VWAP reversion", text: "Sell NIFTY when price is above VWAP and RSI is above 70 (overbought). Stop loss 0.5%, target 1%, quantity 50." },
   { label: "Candle breakout", text: "Buy NIFTY when price breaks above the previous candle's high while trading above the 5 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 50." },
+  { label: "Bitcoin EMA trend", text: "Buy BTCUSD when the 9 EMA crosses above the 21 EMA and price is above the 50 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 0.01, trade 24 hours." },
 ];
 
 function AutoTradeTab({ session }) {
@@ -767,9 +768,33 @@ function AutoTradeTab({ session }) {
     load();
   }
 
+  async function markLive(tradeId) {
+    await supabase.from("paper_trades").update({ is_live: true }).eq("id", tradeId);
+    load();
+  }
+
+  async function uploadScreenshot(tradeId, file) {
+    const path = `${user.id}/${tradeId}-${Date.now()}.${file.name.split(".").pop()}`;
+    const { error: upErr } = await supabase.storage.from("trade-screenshots").upload(path, file);
+    if (upErr) { alert("Upload failed: " + upErr.message); return; }
+    await supabase.from("paper_trades").update({
+      status: "closed", screenshot_url: path, confirmed_square_off: true,
+    }).eq("id", tradeId);
+    load();
+  }
+
   return (
     <div className="content">
-      <div className="banner warn">Paper trading only — no real orders are ever placed here. This simulates your strategy against live prices so you can see how it would have performed before risking real money. Requires an external scheduler hitting the engine every few minutes during market hours (see setup notes from your developer). Not investment advice.</div>
+      <div className="banner warn">Paper trading only by default — no real orders are ever placed here. This simulates your strategy against live prices so you can see how it would have performed before risking real money. Requires an external scheduler hitting the engine every few minutes during market hours (see setup notes from your developer). Not investment advice.</div>
+
+      {paperTrades.filter((t) => t.status === "pending_confirmation").map((t) => (
+        <div className="banner danger" key={t.id}>
+          <b>🚨 A live trade {t.hit_type === "target" ? "hit its target" : t.hit_type === "window_end" ? "reached window end" : "hit its stop-loss"}.</b> Square off on your broker now, then upload a screenshot below to stop the reminder emails.
+          <div style={{ marginTop: 10 }}>
+            <input type="file" accept="image/*" onChange={(e) => e.target.files[0] && uploadScreenshot(t.id, e.target.files[0])} />
+          </div>
+        </div>
+      ))}
 
       {newSignalCount > 0 && (
         <div className="banner info">🔔 {newSignalCount} new signal{newSignalCount > 1 ? "s" : ""} triggered since you last checked. Scroll down to "Your strategies" and tap View trades.</div>
@@ -789,8 +814,8 @@ function AutoTradeTab({ session }) {
       <div className="card">
         <div className="field">
           <label>Instrument key</label>
-          <input value={instrumentKey} onChange={(e) => setInstrumentKey(e.target.value)} placeholder="e.g. NSE_INDEX|Nifty 50" />
-          <div className="muted-note">Use "NSE_INDEX|Nifty 50" or "NSE_INDEX|Nifty Bank" for indices. For individual stocks, ask your developer to look up the exact instrument key from Upstox's instrument master file.</div>
+          <input value={instrumentKey} onChange={(e) => setInstrumentKey(e.target.value)} placeholder="e.g. NSE_INDEX|Nifty 50 or DELTA|BTCUSD" />
+          <div className="muted-note">NSE: "NSE_INDEX|Nifty 50" or "NSE_INDEX|Nifty Bank". Crypto (via Delta Exchange, no connection needed for paper trading): "DELTA|BTCUSD" or "DELTA|ETHUSD". For individual NSE stocks, ask your developer to look up the exact instrument key from Upstox's instrument master file.</div>
         </div>
         <div className="field">
           <label>Describe your strategy in plain English</label>
@@ -935,12 +960,18 @@ function AutoTradeTab({ session }) {
               {expanded === s.id && (
                 <div style={{ marginTop: 10 }}>
                   {trades.length === 0 ? <div className="muted-note">No paper trades logged yet.</div> : trades.map((t) => (
-                    <div className="trade-row" key={t.id}>
+                    <div className="trade-row" key={t.id} style={{ flexWrap: "wrap" }}>
                       <div>
-                        <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price}</div>
-                        <div className="trade-meta">{new Date(t.entry_time).toLocaleString("en-IN")} {t.status === "closed" ? `→ ${t.exit_price}` : "(open)"}</div>
+                        <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price} {t.is_live && <span style={{ color: "var(--loss)" }}>● LIVE</span>}</div>
+                        <div className="trade-meta">
+                          {new Date(t.entry_time).toLocaleString("en-IN")}{" "}
+                          {t.status === "closed" ? `→ ${t.exit_price}` : t.status === "pending_confirmation" ? "(awaiting your confirmation)" : "(open)"}
+                        </div>
                       </div>
                       <div className={"pnl " + ((t.pnl || 0) >= 0 ? "pos" : "neg")}>{t.pnl != null ? fmt(t.pnl) : "—"}</div>
+                      {t.status === "open" && !t.is_live && (
+                        <button className="pill" style={{ width: "100%", marginTop: 6 }} onClick={() => markLive(t.id)}>I took this trade live</button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -953,6 +984,7 @@ function AutoTradeTab({ session }) {
     </div>
   );
 }
+
 
 function BrokerTab({ session, onSynced }) {
   const [syncing, setSyncing] = useState(false);
