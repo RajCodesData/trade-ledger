@@ -1018,7 +1018,15 @@ function BrokerTab({ session, onSynced }) {
   const [deltaApiSecret, setDeltaApiSecret] = useState("");
   const [deltaEnv, setDeltaEnv] = useState("testnet");
   const [deltaSaving, setDeltaSaving] = useState(false);
-  const [deltaMessage, setDeltaMessage] = useState("");
+  const [deltaResult, setDeltaResult] = useState(null); // { ok: bool, message: string }
+  const [deltaStatus, setDeltaStatus] = useState(null); // existing saved connection, if any
+
+  useEffect(() => { loadDeltaStatus(); }, []);
+
+  async function loadDeltaStatus() {
+    const { data } = await supabase.from("delta_connections").select("environment, connected_at").eq("user_id", session.user.id).maybeSingle();
+    setDeltaStatus(data || null);
+  }
 
   function connectUpstox() {
     const clientId = process.env.NEXT_PUBLIC_UPSTOX_CLIENT_ID;
@@ -1041,8 +1049,8 @@ function BrokerTab({ session, onSynced }) {
   }
 
   async function saveDelta() {
-    setDeltaMessage("");
-    if (!deltaApiKey.trim() || !deltaApiSecret.trim()) { setDeltaMessage("Enter both API key and secret."); return; }
+    setDeltaResult(null);
+    if (!deltaApiKey.trim() || !deltaApiSecret.trim()) { setDeltaResult({ ok: false, message: "Enter both API key and secret." }); return; }
     setDeltaSaving(true);
     try {
       const res = await fetch("/api/delta/connect", {
@@ -1050,10 +1058,15 @@ function BrokerTab({ session, onSynced }) {
         body: JSON.stringify({ apiKey: deltaApiKey.trim(), apiSecret: deltaApiSecret.trim(), environment: deltaEnv }),
       });
       const data = await res.json();
-      if (!res.ok) { setDeltaMessage(data.error || "Failed to save."); }
-      else { setDeltaMessage(`Connected (${deltaEnv}). You can now switch a strategy to "Go Live".`); setDeltaApiKey(""); setDeltaApiSecret(""); }
+      if (!res.ok || !data.success) {
+        setDeltaResult({ ok: false, message: data.error || "Failed to save." });
+      } else {
+        setDeltaResult({ ok: true, message: `Verified and connected — Delta accepted these credentials for ${data.environment}.` });
+        setDeltaApiKey(""); setDeltaApiSecret("");
+        loadDeltaStatus();
+      }
     } catch (e) {
-      setDeltaMessage("Could not reach the server.");
+      setDeltaResult({ ok: false, message: "Could not reach the server." });
     }
     setDeltaSaving(false);
   }
@@ -1079,8 +1092,15 @@ function BrokerTab({ session, onSynced }) {
 
       <h2 className="section-title" style={{ marginTop: 20 }}>Connect Delta Exchange (for live crypto trading)</h2>
       <div className="card">
-        <div className="banner danger" style={{ marginTop: 0 }}>
-          These credentials can place real orders with real funds. Start with <b>testnet</b> to validate everything works before switching to production. Your API secret is encrypted before storage.
+        {deltaStatus ? (
+          <div className="banner" style={{ background: "rgba(47,214,192,.1)", borderColor: "rgba(47,214,192,.4)", color: "var(--profit)", marginTop: 0 }}>
+            ✅ Connected — {deltaStatus.environment} — since {new Date(deltaStatus.connected_at).toLocaleString("en-IN")}
+          </div>
+        ) : (
+          <div className="banner warn" style={{ marginTop: 0 }}>Not connected yet.</div>
+        )}
+        <div className="banner danger">
+          These credentials can place real orders with real funds. Start with <b>testnet</b> to validate everything works before switching to production. Your API secret is encrypted before storage, and we test it against Delta before saving.
         </div>
         <div className="field">
           <label>Environment</label>
@@ -1100,8 +1120,12 @@ function BrokerTab({ session, onSynced }) {
         <div className="muted-note" style={{ marginTop: 0 }}>
           Generate keys at {deltaEnv === "testnet" ? "demo.delta.exchange" : "delta.exchange"} → Account → API Management. Trading-permission keys require whitelisting a static IP — talk to your developer about setting up a static-IP proxy before using production.
         </div>
-        {deltaMessage && <div className="muted-note">{deltaMessage}</div>}
-        <button className="primary" disabled={deltaSaving} onClick={saveDelta}>{deltaSaving ? "Saving..." : "Save connection"}</button>
+        {deltaResult && (
+          <div className={deltaResult.ok ? "banner" : "banner danger"} style={deltaResult.ok ? { background: "rgba(47,214,192,.1)", borderColor: "rgba(47,214,192,.4)", color: "var(--profit)" } : {}}>
+            {deltaResult.ok ? "✅ " : "❌ "}{deltaResult.message}
+          </div>
+        )}
+        <button className="primary" disabled={deltaSaving} onClick={saveDelta}>{deltaSaving ? "Verifying with Delta..." : "Save connection"}</button>
       </div>
     </div>
   );
