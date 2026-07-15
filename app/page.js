@@ -652,11 +652,11 @@ function TaxReportTab({ trades }) {
 
 // ---------- AUTO-TRADE TAB (paper trading only) ----------
 const STRATEGY_TEMPLATES = [
-  { label: "EMA crossover", text: "Buy NIFTY when the 9 EMA crosses above the 21 EMA. Stop loss 0.5%, target 1%, quantity 50, trade between 9:15 and 15:00." },
-  { label: "RSI reversal", text: "Buy NIFTY when RSI drops below 30 (oversold) and then price is above VWAP. Stop loss 0.5%, target 1%, quantity 50." },
-  { label: "VWAP reversion", text: "Sell NIFTY when price is above VWAP and RSI is above 70 (overbought). Stop loss 0.5%, target 1%, quantity 50." },
-  { label: "Candle breakout", text: "Buy NIFTY when price breaks above the previous candle's high while trading above the 5 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 50." },
-  { label: "Bitcoin EMA trend", text: "Buy BTCUSD when the 9 EMA crosses above the 21 EMA and price is above the 50 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 0.01, trade 24 hours." },
+  { label: "EMA crossover", instrumentKey: "NSE_INDEX|Nifty 50", text: "Buy NIFTY when the 9 EMA crosses above the 21 EMA. Stop loss 0.5%, target 1%, quantity 50, trade between 9:15 and 15:00." },
+  { label: "RSI reversal", instrumentKey: "NSE_INDEX|Nifty 50", text: "Buy NIFTY when RSI drops below 30 (oversold) and then price is above VWAP. Stop loss 0.5%, target 1%, quantity 50." },
+  { label: "VWAP reversion", instrumentKey: "NSE_INDEX|Nifty 50", text: "Sell NIFTY when price is above VWAP and RSI is above 70 (overbought). Stop loss 0.5%, target 1%, quantity 50." },
+  { label: "Candle breakout", instrumentKey: "NSE_INDEX|Nifty 50", text: "Buy NIFTY when price breaks above the previous candle's high while trading above the 5 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 50." },
+  { label: "Bitcoin EMA trend", instrumentKey: "DELTA|BTCUSD", text: "Buy BTCUSD when the 9 EMA crosses above the 21 EMA and price is above the 50 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 0.01, trade 24 hours." },
 ];
 
 function AutoTradeTab({ session }) {
@@ -721,6 +721,9 @@ function AutoTradeTab({ session }) {
         capital_base: null,
         risk_pct: null,
         lot_size: 1,
+        execution_mode: "paper",
+        leverage: 25,
+        max_position_usd: null,
       });
     } catch (e) {
       console.error("strategy parse error:", e);
@@ -740,6 +743,7 @@ function AutoTradeTab({ session }) {
       qty: draft.qty, active: armed,
       position_sizing_mode: draft.position_sizing_mode, capital_base: draft.capital_base,
       risk_pct: draft.risk_pct, lot_size: draft.lot_size,
+      execution_mode: draft.execution_mode, leverage: draft.leverage, max_position_usd: draft.max_position_usd,
     });
     setSaving(false);
     setDescription(""); setDraft(null);
@@ -804,7 +808,7 @@ function AutoTradeTab({ session }) {
       <div className="card">
         <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
           {STRATEGY_TEMPLATES.map((t) => (
-            <button key={t.label} className="ghost" style={{ width: "auto", flex: "1 1 45%" }} onClick={() => setDescription(t.text)}>{t.label}</button>
+            <button key={t.label} className="ghost" style={{ width: "auto", flex: "1 1 45%" }} onClick={() => { setDescription(t.text); setInstrumentKey(t.instrumentKey); }}>{t.label}</button>
           ))}
         </div>
         <div className="muted-note">These are generic starting points based on common technical patterns — edit the text below after picking one, or write your own from scratch.</div>
@@ -925,7 +929,28 @@ function AutoTradeTab({ session }) {
                 <div className="muted-note" style={{ marginTop: 0 }}>Quantity each trade = (Capital × Risk%) ÷ stop distance, rounded down to the nearest lot. If the stop is wider, size shrinks automatically — this keeps risk per trade constant even as your stop-loss varies.</div>
               </>
             )}
-            <button className="primary" disabled={saving} onClick={() => saveStrategy(true)}>{saving ? "Saving..." : "Save & Arm (paper trading)"}</button>
+            {instrumentKey.startsWith("DELTA|") && (
+              <>
+                <div className="field">
+                  <label>Execution</label>
+                  <select value={draft.execution_mode} onChange={(e) => setDraft({ ...draft, execution_mode: e.target.value })}>
+                    <option value="paper">Paper trading (simulated)</option>
+                    <option value="delta_live">🔴 Go Live — place real orders on Delta Exchange</option>
+                  </select>
+                </div>
+                {draft.execution_mode === "delta_live" && (
+                  <div className="banner danger">
+                    This will place real orders using your connected Delta Exchange account the moment conditions are met. Make sure you've connected Delta on the Broker tab first.
+                    <div className="row" style={{ marginTop: 10 }}>
+                      <div className="field"><label>Leverage</label><input type="number" value={draft.leverage} onChange={(e) => setDraft({ ...draft, leverage: parseFloat(e.target.value) })} /></div>
+                      <div className="field"><label>Max position size (USD)</label><input type="number" value={draft.max_position_usd || ""} onChange={(e) => setDraft({ ...draft, max_position_usd: e.target.value ? parseFloat(e.target.value) : null })} placeholder="e.g. 100" /></div>
+                    </div>
+                    <div className="muted-note">Max position size is a hard cap — actual order size will never exceed this in USD notional value, regardless of your quantity/risk settings above.</div>
+                  </div>
+                )}
+              </>
+            )}
+            <button className="primary" disabled={saving} onClick={() => saveStrategy(true)}>{saving ? "Saving..." : draft.execution_mode === "delta_live" ? "Save & Go Live" : "Save & Arm (paper trading)"}</button>
             <button className="ghost" disabled={saving} onClick={() => saveStrategy(false)}>Save without arming</button>
           </div>
         )}
@@ -941,10 +966,10 @@ function AutoTradeTab({ session }) {
           const net = closed.reduce((sum, t) => sum + (t.pnl || 0), 0);
           const wins = closed.filter((t) => (t.pnl || 0) > 0).length;
           return (
-            <div className="card" key={s.id}>
+            <div className="card" key={s.id} style={s.execution_mode === "delta_live" ? { border: "1px solid var(--loss)" } : {}}>
               <div className="row">
                 <div>
-                  <div className="trade-instr">{s.name}</div>
+                  <div className="trade-instr">{s.name} {s.execution_mode === "delta_live" && <span style={{ color: "var(--loss)" }}>🔴 LIVE</span>}</div>
                   <div className="trade-meta">{s.instrument_key} · {s.direction} · {(s.entry_conditions || []).map((c) => `${c.metric} ${c.comparator.replace(/_/g, " ")} ${c.value}`).join(" AND ")}</div>
                 </div>
                 <button className="pill" style={{ color: s.active ? "var(--profit)" : "var(--muted)" }} onClick={() => toggleActive(s)}>
@@ -962,7 +987,7 @@ function AutoTradeTab({ session }) {
                   {trades.length === 0 ? <div className="muted-note">No paper trades logged yet.</div> : trades.map((t) => (
                     <div className="trade-row" key={t.id} style={{ flexWrap: "wrap" }}>
                       <div>
-                        <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price} {t.is_live && <span style={{ color: "var(--loss)" }}>● LIVE</span>}</div>
+                        <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price} {t.real_order && <span style={{ color: "var(--loss)" }}>🔴 REAL ORDER</span>} {t.is_live && !t.real_order && <span style={{ color: "var(--loss)" }}>● LIVE</span>}</div>
                         <div className="trade-meta">
                           {new Date(t.entry_time).toLocaleString("en-IN")}{" "}
                           {t.status === "closed" ? `→ ${t.exit_price}` : t.status === "pending_confirmation" ? "(awaiting your confirmation)" : "(open)"}
@@ -989,6 +1014,11 @@ function AutoTradeTab({ session }) {
 function BrokerTab({ session, onSynced }) {
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");
+  const [deltaApiKey, setDeltaApiKey] = useState("");
+  const [deltaApiSecret, setDeltaApiSecret] = useState("");
+  const [deltaEnv, setDeltaEnv] = useState("testnet");
+  const [deltaSaving, setDeltaSaving] = useState(false);
+  const [deltaMessage, setDeltaMessage] = useState("");
 
   function connectUpstox() {
     const clientId = process.env.NEXT_PUBLIC_UPSTOX_CLIENT_ID;
@@ -1010,6 +1040,24 @@ function BrokerTab({ session, onSynced }) {
     setSyncing(false);
   }
 
+  async function saveDelta() {
+    setDeltaMessage("");
+    if (!deltaApiKey.trim() || !deltaApiSecret.trim()) { setDeltaMessage("Enter both API key and secret."); return; }
+    setDeltaSaving(true);
+    try {
+      const res = await fetch("/api/delta/connect", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ apiKey: deltaApiKey.trim(), apiSecret: deltaApiSecret.trim(), environment: deltaEnv }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setDeltaMessage(data.error || "Failed to save."); }
+      else { setDeltaMessage(`Connected (${deltaEnv}). You can now switch a strategy to "Go Live".`); setDeltaApiKey(""); setDeltaApiSecret(""); }
+    } catch (e) {
+      setDeltaMessage("Could not reach the server.");
+    }
+    setDeltaSaving(false);
+  }
+
   return (
     <div className="content">
       <h2 className="section-title">Connect Upstox</h2>
@@ -1027,6 +1075,33 @@ function BrokerTab({ session, onSynced }) {
         <div className="muted-note" style={{ marginTop: 0 }}>Pulls today's executed trades from Upstox and adds them to your journal automatically.</div>
         <button className="primary" disabled={syncing} onClick={syncNow}>{syncing ? "Syncing..." : "Sync now"}</button>
         {message && <div className="muted-note">{message}</div>}
+      </div>
+
+      <h2 className="section-title" style={{ marginTop: 20 }}>Connect Delta Exchange (for live crypto trading)</h2>
+      <div className="card">
+        <div className="banner danger" style={{ marginTop: 0 }}>
+          These credentials can place real orders with real funds. Start with <b>testnet</b> to validate everything works before switching to production. Your API secret is encrypted before storage.
+        </div>
+        <div className="field">
+          <label>Environment</label>
+          <select value={deltaEnv} onChange={(e) => setDeltaEnv(e.target.value)}>
+            <option value="testnet">Testnet (fake money, safe to test)</option>
+            <option value="production">Production (real money)</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>API Key</label>
+          <input value={deltaApiKey} onChange={(e) => setDeltaApiKey(e.target.value)} placeholder="From Delta Exchange > API Management" />
+        </div>
+        <div className="field">
+          <label>API Secret</label>
+          <input type="password" value={deltaApiSecret} onChange={(e) => setDeltaApiSecret(e.target.value)} />
+        </div>
+        <div className="muted-note" style={{ marginTop: 0 }}>
+          Generate keys at {deltaEnv === "testnet" ? "demo.delta.exchange" : "delta.exchange"} → Account → API Management. Trading-permission keys require whitelisting a static IP — talk to your developer about setting up a static-IP proxy before using production.
+        </div>
+        {deltaMessage && <div className="muted-note">{deltaMessage}</div>}
+        <button className="primary" disabled={deltaSaving} onClick={saveDelta}>{deltaSaving ? "Saving..." : "Save connection"}</button>
       </div>
     </div>
   );

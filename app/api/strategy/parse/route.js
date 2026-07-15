@@ -33,7 +33,8 @@ Guidance:
 - A target described as a percent -> target_type "percent", target_value set.
 - If the strategy says to trade an option (e.g. "buy the ATM put") while the entry logic is based on the underlying index/stock, note this in the summary as NOT currently supported - the engine will paper-trade the underlying instrument itself, not an option contract, and this must be flagged, not silently ignored.
 - Vague filters like "market is highly volatile" or "already made a large impulsive move" cannot be reliably quantified - omit them from entry_conditions and mention in the summary that they were not included.
-- Use sensible defaults for anything unspecified: qty 1, window 09:15-15:15, stop_loss_type "percent" with stop_loss_value 0.5, target_type "percent" with target_value 1.`;
+- Use sensible defaults for anything unspecified: qty 1, window 09:15-15:15, stop_loss_type "percent" with stop_loss_value 0.5, target_type "percent" with target_value 1.
+- If the strategy is about a cryptocurrency (Bitcoin, BTC, Ethereum, ETH, etc.), it trades 24/7 - unless the user specifies a window, use window_start "00:00" and window_end "23:55".`;
 
 export async function POST(request) {
   const { description } = await request.json();

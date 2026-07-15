@@ -3,12 +3,12 @@
 You already have: GitHub, Supabase, Vercel accounts, database tables created,
 and your Upstox API key + secret. Here's the rest.
 
-## 1. Get an Anthropic API key (powers the AI review + backtest features)
-1. Go to console.anthropic.com → sign up / log in
-2. Go to "Get API Keys" → Create Key
-3. Add a small amount of billing credit (this app's usage is very light — a
-   few cents per AI review/backtest)
-4. Copy the key (starts with `sk-ant-...`) — you'll paste it into Vercel soon
+## 1. Get an OpenAI API key (powers the AI review + backtest features)
+1. Go to platform.openai.com → sign up / log in (use your existing paid account)
+2. Go to Dashboard → API Keys → Create new secret key
+3. Copy the key (starts with `sk-...`) — you'll paste it into Vercel soon.
+   Usage here is very light — a few cents per AI review/backtest, billed to
+   your existing OpenAI account.
 
 ## 2. Get the code onto GitHub
 Easiest way if you're not comfortable with code: install **GitHub Desktop**
@@ -36,7 +36,7 @@ Easiest way if you're not comfortable with code: install **GitHub Desktop**
    | NEXT_PUBLIC_UPSTOX_CLIENT_ID | your Upstox API Key |
    | UPSTOX_API_SECRET | your Upstox API Secret |
    | NEXT_PUBLIC_UPSTOX_REDIRECT_URI | leave blank for now, we'll fix after first deploy |
-   | ANTHROPIC_API_KEY | your Anthropic API key |
+   | OPENAI_API_KEY | your OpenAI API key |
    | NEXT_PUBLIC_APP_URL | leave blank for now, we'll fix after first deploy |
 
 4. Click **Deploy**. Wait ~2 minutes.

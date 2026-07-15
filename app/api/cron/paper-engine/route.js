@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import { sendEmail } from "../../../../lib/sendEmail";
-import { deltaGetTicker, deltaGetCandles } from "../../../../lib/deltaExchange";
+import { deltaGetTicker, deltaGetCandles, deltaGetProduct, deltaSetLeverage, deltaPlaceBracketEntry, deltaGetPosition } from "../../../../lib/deltaExchange";
+import { decrypt } from "../../../../lib/crypto";
 
 const NAG_INTERVAL_MINUTES = 2;
 
@@ -188,6 +189,8 @@ export async function GET(request) {
   const userIds = Array.from(new Set(strategies.map((s) => s.user_id)));
   const { data: connections } = await supabaseAdmin.from("broker_connections").select("*").in("user_id", userIds);
   const connByUser = Object.fromEntries((connections || []).map((c) => [c.user_id, c]));
+  const { data: deltaConns } = await supabaseAdmin.from("delta_connections").select("*").in("user_id", userIds);
+  const deltaConnByUser = Object.fromEntries((deltaConns || []).map((c) => [c.user_id, c]));
 
   for (const s of strategies) {
     const usesDelta = isDelta(s.instrument_key);
@@ -242,6 +245,39 @@ export async function GET(request) {
     if (nowMinutes < startMin) { results.push({ strategy: s.id, skipped: "before window" }); continue; }
 
     if (openTrade) {
+      // Real order on Delta - the exchange's own bracket order manages the exit.
+      // We just poll to see if it's closed yet, we don't recompute stop/target ourselves.
+      if (openTrade.real_order) {
+        const dConn = deltaConnByUser[s.user_id];
+        if (!dConn?.encrypted_api_key) { results.push({ strategy: s.id, skipped: "no delta connection" }); continue; }
+        try {
+          const apiKey = decrypt(dConn.encrypted_api_key);
+          const apiSecret = decrypt(dConn.encrypted_api_secret);
+          const posRes = await deltaGetPosition(dConn.environment, apiKey, apiSecret, openTrade.delta_product_id);
+          const pos = Array.isArray(posRes.result) ? posRes.result[0] : posRes.result;
+          const stillOpen = pos && Number(pos.size) !== 0;
+          if (!stillOpen) {
+            // Position closed on the exchange (stop or target hit there). Estimate
+            // exit/PNL from current price for display - the real number of record
+            // is always what Delta itself shows in your account.
+            const ltp = await fetchLtp(s.instrument_key, null);
+            const qty = openTrade.qty || 1;
+            const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty : null;
+            await supabaseAdmin.from("paper_trades").update({
+              status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl,
+              notes: "Real order - exit price is estimated. Verify actual result in your Delta Exchange account.",
+            }).eq("id", openTrade.id);
+            results.push({ strategy: s.id, action: "real_position_closed", estimatedPnl: pnl });
+          } else {
+            results.push({ strategy: s.id, action: "real_position_open" });
+          }
+        } catch (e) {
+          console.error("delta position check failed:", e);
+          results.push({ strategy: s.id, skipped: "delta position check error" });
+        }
+        continue;
+      }
+
       const ltp = await fetchLtp(s.instrument_key, conn?.access_token);
       if (!ltp) { results.push({ strategy: s.id, skipped: "no ltp" }); continue; }
       let hit = false, hitType = null;
@@ -340,6 +376,73 @@ export async function GET(request) {
           results.push({ strategy: s.id, action: "skipped_risk_too_small", riskPoints, rawQty });
           continue;
         }
+      }
+
+      if (s.execution_mode === "delta_live") {
+        const dConn = deltaConnByUser[s.user_id];
+        if (!dConn?.encrypted_api_key) { results.push({ strategy: s.id, skipped: "delta not connected - entry not taken" }); continue; }
+        try {
+          const apiKey = decrypt(dConn.encrypted_api_key);
+          const apiSecret = decrypt(dConn.encrypted_api_secret);
+          const symbol = deltaSymbol(s.instrument_key);
+          const product = await deltaGetProduct(dConn.environment, symbol);
+          if (!product) { results.push({ strategy: s.id, skipped: "could not fetch delta product info" }); continue; }
+
+          const contractValue = parseFloat(product.contract_value);
+          let contracts = Math.round(qty / contractValue);
+
+          // Hard cap: never exceed the configured max position size in USD, no matter what the sizing math says.
+          if (s.max_position_usd) {
+            const notional = contracts * contractValue * entryPrice;
+            if (notional > s.max_position_usd) {
+              contracts = Math.floor(s.max_position_usd / (contractValue * entryPrice));
+            }
+          }
+          if (contracts < 1) { results.push({ strategy: s.id, skipped: "position size rounds to zero contracts" }); continue; }
+
+          await deltaSetLeverage(dConn.environment, apiKey, apiSecret, product.id, s.leverage || 25);
+          const orderRes = await deltaPlaceBracketEntry(dConn.environment, apiKey, apiSecret, {
+            productId: product.id,
+            side: s.direction === "long" ? "buy" : "sell",
+            size: contracts,
+            stopLossPrice: stopPrice,
+            takeProfitPrice: targetPrice,
+          });
+
+          if (!orderRes.success) {
+            results.push({ strategy: s.id, action: "delta_order_failed", error: orderRes.error });
+            continue;
+          }
+
+          const filledPrice = parseFloat(orderRes.result.limit_price || entryPrice);
+          await supabaseAdmin.from("paper_trades").insert({
+            strategy_id: s.id, user_id: s.user_id, instrument_key: s.instrument_key,
+            side: s.direction === "long" ? "buy" : "sell", entry_price: filledPrice,
+            entry_time: new Date().toISOString(), status: "open", trade_date: today,
+            stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints, qty,
+            real_order: true, delta_order_id: String(orderRes.result.id), delta_product_id: product.id,
+          });
+          results.push({ strategy: s.id, action: "real_order_placed", contracts, price: filledPrice });
+
+          try {
+            const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+            const email = userData?.user?.email;
+            if (email) {
+              await sendEmail({
+                to: email,
+                subject: `🔴 REAL order placed: "${s.name}" (${dConn.environment})`,
+                html: `<p><b>${s.name}</b> just placed a REAL ${dConn.environment} order on Delta Exchange.</p>
+                       <p>Instrument: ${s.instrument_key}<br/>Side: ${s.direction}<br/>Size: ${contracts} contracts<br/>
+                       Entry: ${filledPrice}<br/>Stop: ${stopPrice}<br/>Target: ${targetPrice}<br/>Leverage: ${s.leverage || 25}x</p>
+                       <p style="color:#c00;">This used real funds${dConn.environment === "testnet" ? " (testnet - not real money)" : ""}. Verify in your Delta Exchange account.</p>`,
+              });
+            }
+          } catch (e) { console.error("live order email failed:", e); }
+        } catch (e) {
+          console.error("delta live entry failed:", e);
+          results.push({ strategy: s.id, action: "delta_entry_error", error: String(e) });
+        }
+        continue;
       }
 
       await supabaseAdmin.from("paper_trades").insert({
