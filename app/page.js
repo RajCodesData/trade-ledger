@@ -85,6 +85,17 @@ export default function Page() {
 }
 
 // ---------- AUTH ----------
+function Logo() {
+  return (
+    <span className="brand-mark">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+        <path d="M3 17L9 11L13 15L21 6" stroke="#0A0C14" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M15 6H21V12" stroke="#0A0C14" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  );
+}
+
 function AuthForm() {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -113,7 +124,7 @@ function AuthForm() {
   return (
     <div className="screen">
       <div className="auth-wrap">
-        <div className="auth-logo">trade<span>ledger</span></div>
+        <div className="auth-logo"><Logo />tr<span className="brand-ai">AI</span>der</div>
         <div className="auth-sub">{mode === "signup" ? "Create your journal account" : "Log in to your journal"}</div>
         <div className="field">
           <label>Email</label>
@@ -174,7 +185,7 @@ function Dashboard({ session }) {
   return (
     <div className="screen">
       <div className="topbar">
-        <div className="brand">trade<span>ledger</span></div>
+        <div className="brand"><Logo />tr<span className="brand-ai">AI</span>der</div>
         <button className="icon-btn" onClick={logout}>Log out ⏻</button>
       </div>
 

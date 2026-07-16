@@ -30,6 +30,15 @@ export async function POST(request) {
       connected_at: new Date().toISOString(),
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    // Safety: never let a strategy that was armed against one environment
+    // (e.g. testnet) silently keep running after the connection switches to
+    // another environment (e.g. production). Force a conscious re-arm.
+    await supabaseAdmin.from("strategies")
+      .update({ active: false })
+      .eq("user_id", userData.user.id)
+      .eq("execution_mode", "delta_live");
+
     return NextResponse.json({ success: true, verified: true, environment: env });
   } catch (e) {
     console.error(e);
