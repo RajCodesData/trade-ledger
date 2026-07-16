@@ -659,12 +659,20 @@ const STRATEGY_TEMPLATES = [
   { label: "Bitcoin EMA trend", instrumentKey: "DELTA|BTCUSD", text: "Buy BTCUSD when the 9 EMA crosses above the 21 EMA and price is above the 50 EMA. Stop loss at the previous candle's low, target 2x the risk, quantity 0.01, trade 24 hours." },
 ];
 
+const COMMON_INSTRUMENTS = [
+  { label: "Nifty 50", value: "NSE_INDEX|Nifty 50" },
+  { label: "Bank Nifty", value: "NSE_INDEX|Nifty Bank" },
+  { label: "Bitcoin (BTCUSD)", value: "DELTA|BTCUSD" },
+  { label: "Ethereum (ETHUSD)", value: "DELTA|ETHUSD" },
+];
+
 function AutoTradeTab({ session }) {
   const user = session.user;
   const [strategies, setStrategies] = useState([]);
   const [paperTrades, setPaperTrades] = useState([]);
   const [description, setDescription] = useState("");
   const [instrumentKey, setInstrumentKey] = useState("NSE_INDEX|Nifty 50");
+  const [customInstrument, setCustomInstrument] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState("");
   const [draft, setDraft] = useState(null); // parsed rules pending confirmation
@@ -818,9 +826,25 @@ function AutoTradeTab({ session }) {
       <h2 className="section-title">Define a strategy</h2>
       <div className="card">
         <div className="field">
-          <label>Instrument key</label>
-          <input value={instrumentKey} onChange={(e) => setInstrumentKey(e.target.value)} placeholder="e.g. NSE_INDEX|Nifty 50 or DELTA|BTCUSD" />
-          <div className="muted-note">NSE: "NSE_INDEX|Nifty 50" or "NSE_INDEX|Nifty Bank". Crypto (via Delta Exchange, no connection needed for paper trading): "DELTA|BTCUSD" or "DELTA|ETHUSD". For individual NSE stocks, ask your developer to look up the exact instrument key from Upstox's instrument master file.</div>
+          <label>Instrument</label>
+          {!customInstrument ? (
+            <select
+              value={COMMON_INSTRUMENTS.some((i) => i.value === instrumentKey) ? instrumentKey : "__custom__"}
+              onChange={(e) => {
+                if (e.target.value === "__custom__") { setCustomInstrument(true); }
+                else { setInstrumentKey(e.target.value); }
+              }}
+            >
+              {COMMON_INSTRUMENTS.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+              <option value="__custom__">Other / custom instrument key...</option>
+            </select>
+          ) : (
+            <>
+              <input value={instrumentKey} onChange={(e) => setInstrumentKey(e.target.value)} placeholder="e.g. NSE_INDEX|Nifty 50 or DELTA|BTCUSD" />
+              <button className="ghost" style={{ marginTop: 6 }} onClick={() => setCustomInstrument(false)}>← Back to common instruments</button>
+            </>
+          )}
+          <div className="muted-note">For individual NSE stocks or other crypto pairs, choose "Other / custom" and ask your developer to look up the exact instrument key.</div>
         </div>
         <div className="field">
           <label>Describe your strategy in plain English</label>
