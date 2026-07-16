@@ -197,7 +197,7 @@ function Dashboard({ session }) {
       )}
       {tab === "analytics" && <AnalyticsTab trades={trades} />}
       {tab === "backtest" && <BacktestTab />}
-      {tab === "tax" && <TaxReportTab trades={trades} />}
+      {tab === "tax" && <TaxReportTab trades={trades} session={session} />}
       {tab === "auto" && <AutoTradeTab session={session} />}
       {tab === "broker" && <BrokerTab session={session} onSynced={loadAll} />}
 
@@ -572,7 +572,37 @@ const LTCG_RATE = 0.125;
 const LTCG_EXEMPTION = 125000;
 const CESS_RATE = 0.04;
 
-function TaxReportTab({ trades }) {
+function TaxReportTab({ trades, session }) {
+  const user = session.user;
+  const [openPositions, setOpenPositions] = useState([]);
+  const [annualIncome, setAnnualIncome] = useState("");
+  const [reminderDays, setReminderDays] = useState(15);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data: pos } = await supabase.from("open_positions").select("*").eq("user_id", user.id).eq("segment", "equity_delivery").eq("side", "buy");
+      setOpenPositions(pos || []);
+      const { data: profile } = await supabase.from("profiles").select("annual_income, harvest_reminder_days").eq("id", user.id).maybeSingle();
+      if (profile) {
+        setAnnualIncome(profile.annual_income ?? "");
+        setReminderDays(profile.harvest_reminder_days ?? 15);
+      }
+    })();
+  }, []);
+
+  async function saveHarvestSettings() {
+    setSettingsSaving(true);
+    await supabase.from("profiles").update({
+      annual_income: annualIncome === "" ? null : parseFloat(annualIncome),
+      harvest_reminder_days: reminderDays,
+    }).eq("id", user.id);
+    setSettingsSaving(false);
+    setSettingsSaved(true);
+    setTimeout(() => setSettingsSaved(false), 3000);
+  }
+
   const availableFYs = Array.from(new Set(trades.map((t) => financialYearOf(t.entry_time)))).sort().reverse();
   const [fy, setFy] = useState(availableFYs[0] || currentFinancialYear());
   const { start, end } = fyBounds(fy);
@@ -656,6 +686,32 @@ function TaxReportTab({ trades }) {
       </div>
 
       <button className="ghost" onClick={exportCsv}>Download this FY's trades as CSV (for your CA)</button>
+
+      <h2 className="section-title" style={{ marginTop: 20 }}>Tax-loss harvesting</h2>
+      <div className="card">
+        <div className="muted-note" style={{ marginTop: 0 }}>Sell loss-making equity positions before the financial year ends to book the loss against gains and reduce your tax bill. India has no wash-sale rule for direct equities, so you can generally rebuy right after if you still want the position — confirm with a CA for your case.</div>
+        <div className="row">
+          <div className="field"><label>Annual income (₹, optional context)</label><input type="number" value={annualIncome} onChange={(e) => setAnnualIncome(e.target.value)} placeholder="e.g. 1200000" /></div>
+          <div className="field"><label>Remind me starting (days before FY-end)</label><input type="number" value={reminderDays} onChange={(e) => setReminderDays(parseFloat(e.target.value))} /></div>
+        </div>
+        <button className="primary" disabled={settingsSaving} onClick={saveHarvestSettings}>{settingsSaving ? "Saving..." : "Save settings"}</button>
+        {settingsSaved && <div className="muted-note">Saved.</div>}
+
+        <h2 className="section-title" style={{ marginTop: 16 }}>Currently open equity positions</h2>
+        {openPositions.length === 0 ? (
+          <div className="empty-state">None tracked yet — these come from Upstox auto-sync when a buy hasn't been matched with a sell.</div>
+        ) : (
+          openPositions.map((p) => {
+            const daysHeld = Math.floor((new Date() - new Date(p.opened_at)) / (1000 * 60 * 60 * 24));
+            return (
+              <div className="trade-row" key={p.id}>
+                <div><div className="trade-instr">{p.instrument}</div><div className="trade-meta">Qty {p.remaining_qty} · Entry {p.avg_price} · Held {daysHeld} days {daysHeld > 365 ? "(long-term)" : "(short-term)"}</div></div>
+              </div>
+            );
+          })
+        )}
+        <div className="muted-note">We can't yet auto-fetch live prices for these to show unrealized gain/loss — check current prices on your broker to decide what's worth harvesting. You'll get an email once you're within your reminder window of March 31, if any positions are open.</div>
+      </div>
     </div>
   );
 }

@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/tax-harvest",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}
