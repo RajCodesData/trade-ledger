@@ -671,6 +671,7 @@ function AutoTradeTab({ session }) {
   const [strategies, setStrategies] = useState([]);
   const [paperTrades, setPaperTrades] = useState([]);
   const [description, setDescription] = useState("");
+  const [strategyName, setStrategyName] = useState("");
   const [instrumentKey, setInstrumentKey] = useState("NSE_INDEX|Nifty 50");
   const [customInstrument, setCustomInstrument] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -746,7 +747,7 @@ function AutoTradeTab({ session }) {
   async function saveStrategy(armed) {
     setSaving(true);
     await supabase.from("strategies").insert({
-      user_id: user.id, name: description.slice(0, 60), description,
+      user_id: user.id, name: strategyName.trim() || description.slice(0, 60), description,
       instrument_key: instrumentKey, direction: draft.direction,
       entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end, timeframe: draft.timeframe,
       stop_loss_type: draft.stop_loss_type, stop_loss_value: draft.stop_loss_value, stop_loss_metric: draft.stop_loss_metric,
@@ -757,7 +758,7 @@ function AutoTradeTab({ session }) {
       execution_mode: draft.execution_mode, leverage: draft.leverage, max_position_usd: draft.max_position_usd,
     });
     setSaving(false);
-    setDescription(""); setDraft(null);
+    setDescription(""); setStrategyName(""); setDraft(null);
     load();
   }
 
@@ -786,6 +787,7 @@ function AutoTradeTab({ session }) {
   function startEdit(s) {
     setEditingId(s.id);
     setEditValues({
+      name: s.name,
       direction: s.direction,
       entry_conditions: s.entry_conditions || [],
       timeframe: s.timeframe || "5m",
@@ -899,6 +901,10 @@ function AutoTradeTab({ session }) {
         {draft && (
           <div className="card" style={{ marginTop: 12, background: "var(--surface2)" }}>
             <div className="muted-note" style={{ marginTop: 0 }}>{draft.summary}</div>
+            <div className="field">
+              <label>Strategy name</label>
+              <input value={strategyName} onChange={(e) => setStrategyName(e.target.value)} placeholder="e.g. 5 EMA Bitcoin Short" />
+            </div>
             <div className="field">
               <label>Direction</label>
               <select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value })}>
@@ -1060,6 +1066,10 @@ function AutoTradeTab({ session }) {
 
               {editingId === s.id ? (
                 <div style={{ marginTop: 12 }}>
+                  <div className="field">
+                    <label>Strategy name</label>
+                    <input value={editValues.name} onChange={(e) => setEditValues({ ...editValues, name: e.target.value })} />
+                  </div>
                   <div className="row">
                     <div className="field"><label>Direction</label>
                       <select value={editValues.direction} onChange={(e) => setEditValues({ ...editValues, direction: e.target.value })}>
@@ -1264,7 +1274,7 @@ function BrokerTab({ session, onSynced }) {
       if (!res.ok || !data.success) {
         setDeltaResult({ ok: false, message: data.error || "Failed to save." });
       } else {
-        setDeltaResult({ ok: true, message: `Verified and connected — Delta accepted these credentials for ${data.environment}.` });
+        setDeltaResult({ ok: true, message: `Verified and connected — Delta accepted these credentials for ${data.environment}. Any strategies that were "Go Live" have been paused as a safety measure — go re-arm them individually on the Auto tab to confirm you want them running against ${data.environment}.` });
         setDeltaApiKey(""); setDeltaApiSecret("");
         loadDeltaStatus();
       }
