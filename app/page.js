@@ -709,6 +709,7 @@ function AutoTradeTab({ session }) {
         entry_conditions: data.rules.entry_conditions || [],
         window_start: data.rules.window_start || "09:15",
         window_end: data.rules.window_end || "15:15",
+        timeframe: data.rules.timeframe || "5m",
         stop_loss_type: data.rules.stop_loss_type || "percent",
         stop_loss_value: data.rules.stop_loss_value ?? 0.5,
         stop_loss_metric: data.rules.stop_loss_metric || "",
@@ -737,7 +738,7 @@ function AutoTradeTab({ session }) {
     await supabase.from("strategies").insert({
       user_id: user.id, name: description.slice(0, 60), description,
       instrument_key: instrumentKey, direction: draft.direction,
-      entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end,
+      entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end, timeframe: draft.timeframe,
       stop_loss_type: draft.stop_loss_type, stop_loss_value: draft.stop_loss_value, stop_loss_metric: draft.stop_loss_metric,
       target_type: draft.target_type, target_value: draft.target_value, max_risk_points: draft.max_risk_points,
       qty: draft.qty, active: armed,
@@ -874,6 +875,19 @@ function AutoTradeTab({ session }) {
             ))}
             <button className="ghost" onClick={addCondition}>+ Add another condition</button>
             <div className="muted-note">Metrics: price, vwap, day_open, prev_day_high, prev_day_low, sma_N, ema_N, rsi_N (e.g. sma_20, ema_9, rsi_14)</div>
+
+            <div className="field">
+              <label>Candle timeframe</label>
+              <select value={draft.timeframe} onChange={(e) => setDraft({ ...draft, timeframe: e.target.value })}>
+                <option value="1m">1 minute</option>
+                <option value="3m">3 minutes</option>
+                <option value="5m">5 minutes</option>
+                <option value="15m">15 minutes</option>
+                <option value="30m">30 minutes</option>
+                <option value="1h">1 hour</option>
+              </select>
+            </div>
+            <div className="muted-note" style={{ marginTop: 0 }}>All your EMAs/SMAs/RSI are calculated on candles of this size. Larger timeframes need more history to warm up — NSE instruments only have the current trading day available, so very large timeframes may rarely have enough candles.</div>
 
             <div className="row" style={{ marginTop: 10 }}>
               <div className="field"><label>Window start</label><input value={draft.window_start} onChange={(e) => setDraft({ ...draft, window_start: e.target.value })} /></div>

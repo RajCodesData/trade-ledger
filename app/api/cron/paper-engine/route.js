@@ -40,8 +40,8 @@ async function fetchLtpUpstox(instrumentKey, accessToken) {
 }
 
 // Returns today's intraday candles, oldest first: [{time, open, high, low, close, volume}]
-async function fetchIntradayCandlesUpstox(instrumentKey, accessToken) {
-  const url = `https://api.upstox.com/v3/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/minutes/5`;
+async function fetchIntradayCandlesUpstox(instrumentKey, accessToken, timeframeMinutes) {
+  const url = `https://api.upstox.com/v3/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/minutes/${timeframeMinutes}`;
   const res = await fetch(url, { headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` } });
   const data = await res.json();
   if (data.status !== "success" || !data.data?.candles?.length) return [];
@@ -70,13 +70,20 @@ async function fetchLtp(instrumentKey, accessToken) {
   return fetchLtpUpstox(instrumentKey, accessToken);
 }
 
-async function fetchIntradayCandles(instrumentKey, accessToken) {
+function timeframeToMinutes(tf) {
+  const map = { "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60 };
+  return map[tf] || 5;
+}
+
+async function fetchIntradayCandles(instrumentKey, accessToken, timeframe) {
+  const tfMinutes = timeframeToMinutes(timeframe);
   if (isDelta(instrumentKey)) {
     const end = Math.floor(Date.now() / 1000);
-    const start = end - 60 * 60 * 12; // last 12 hours of 5m candles, plenty for indicators on a 24/7 market
-    return deltaGetCandles(deltaSymbol(instrumentKey), "5m", start, end);
+    // Fetch enough history for ~70 candles at this timeframe, so indicators like EMA-50 have enough data.
+    const start = end - tfMinutes * 60 * 70;
+    return deltaGetCandles(deltaSymbol(instrumentKey), timeframe, start, end);
   }
-  return fetchIntradayCandlesUpstox(instrumentKey, accessToken);
+  return fetchIntradayCandlesUpstox(instrumentKey, accessToken, tfMinutes);
 }
 
 async function fetchPrevDayLevels(instrumentKey, accessToken) {
@@ -315,7 +322,7 @@ export async function GET(request) {
       continue;
     }
 
-    const candles = await fetchIntradayCandles(s.instrument_key, conn?.access_token);
+    const candles = await fetchIntradayCandles(s.instrument_key, conn?.access_token, s.timeframe || "5m");
     if (candles.length < 2) { results.push({ strategy: s.id, skipped: "not enough candle data yet" }); continue; }
     const prevLevels = await fetchPrevDayLevels(s.instrument_key, conn?.access_token);
     const closes = candles.map((c) => c.close);
