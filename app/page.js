@@ -679,6 +679,8 @@ function AutoTradeTab({ session }) {
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [newSignalCount, setNewSignalCount] = useState(0);
+  const [editingId, setEditingId] = useState(null);
+  const [editValues, setEditValues] = useState(null);
 
   useEffect(() => { load(); }, []);
 
@@ -778,6 +780,47 @@ function AutoTradeTab({ session }) {
 
   async function deleteStrategy(id) {
     await supabase.from("strategies").delete().eq("id", id);
+    load();
+  }
+
+  function startEdit(s) {
+    setEditingId(s.id);
+    setEditValues({
+      direction: s.direction,
+      entry_conditions: s.entry_conditions || [],
+      timeframe: s.timeframe || "5m",
+      window_start: s.window_start,
+      window_end: s.window_end,
+      stop_loss_type: s.stop_loss_type,
+      stop_loss_value: s.stop_loss_value,
+      stop_loss_metric: s.stop_loss_metric,
+      target_type: s.target_type,
+      target_value: s.target_value,
+      max_risk_points: s.max_risk_points,
+      position_sizing_mode: s.position_sizing_mode,
+      qty: s.qty,
+      capital_base: s.capital_base,
+      risk_pct: s.risk_pct,
+      lot_size: s.lot_size,
+      execution_mode: s.execution_mode,
+      leverage: s.leverage,
+      max_position_usd: s.max_position_usd,
+    });
+  }
+  function updateEditCondition(i, patch) {
+    const conds = [...editValues.entry_conditions];
+    conds[i] = { ...conds[i], ...patch };
+    setEditValues({ ...editValues, entry_conditions: conds });
+  }
+  function addEditCondition() {
+    setEditValues({ ...editValues, entry_conditions: [...editValues.entry_conditions, { metric: "price", comparator: "above", value_type: "metric", value: "vwap" }] });
+  }
+  function removeEditCondition(i) {
+    setEditValues({ ...editValues, entry_conditions: editValues.entry_conditions.filter((_, idx) => idx !== i) });
+  }
+  async function saveEdit(id) {
+    await supabase.from("strategies").update(editValues).eq("id", id);
+    setEditingId(null); setEditValues(null);
     load();
   }
 
@@ -1014,32 +1057,154 @@ function AutoTradeTab({ session }) {
                   {s.active ? "Armed" : "Paused"}
                 </button>
               </div>
-              <div className="row" style={{ marginTop: 10 }}>
-                <div><div className="trade-meta">Paper trades</div><div className="pnl">{closed.length}</div></div>
-                <div><div className="trade-meta">Win rate</div><div className="pnl">{closed.length ? Math.round((wins / closed.length) * 100) : 0}%</div></div>
-                <div><div className="trade-meta">Net (simulated)</div><div className={"pnl " + (net >= 0 ? "pos" : "neg")}>{fmt(net)}</div></div>
-              </div>
-              <button className="ghost" onClick={() => setExpanded(expanded === s.id ? null : s.id)}>{expanded === s.id ? "Hide trades" : "View trades"}</button>
-              {expanded === s.id && (
-                <div style={{ marginTop: 10 }}>
-                  {trades.length === 0 ? <div className="muted-note">No paper trades logged yet.</div> : trades.map((t) => (
-                    <div className="trade-row" key={t.id} style={{ flexWrap: "wrap" }}>
-                      <div>
-                        <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price} {t.real_order && <span style={{ color: "var(--loss)" }}>🔴 REAL ORDER</span>} {t.is_live && !t.real_order && <span style={{ color: "var(--loss)" }}>● LIVE</span>}</div>
-                        <div className="trade-meta">
-                          {new Date(t.entry_time).toLocaleString("en-IN")}{" "}
-                          {t.status === "closed" ? `→ ${t.exit_price}` : t.status === "pending_confirmation" ? "(awaiting your confirmation)" : "(open)"}
+
+              {editingId === s.id ? (
+                <div style={{ marginTop: 12 }}>
+                  <div className="row">
+                    <div className="field"><label>Direction</label>
+                      <select value={editValues.direction} onChange={(e) => setEditValues({ ...editValues, direction: e.target.value })}>
+                        <option value="long">Long</option><option value="short">Short</option>
+                      </select>
+                    </div>
+                    <div className="field"><label>Timeframe</label>
+                      <select value={editValues.timeframe} onChange={(e) => setEditValues({ ...editValues, timeframe: e.target.value })}>
+                        <option value="1m">1 minute</option><option value="3m">3 minutes</option><option value="5m">5 minutes</option>
+                        <option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <label style={{ display: "block", fontSize: 12, color: "var(--muted)", marginBottom: 6, marginTop: 8 }}>Entry conditions</label>
+                  {editValues.entry_conditions.map((c, i) => (
+                    <div className="card" key={i} style={{ padding: 10, marginBottom: 8, background: "var(--surface2)" }}>
+                      <div className="row">
+                        <div className="field"><label>Metric</label><input value={c.metric} onChange={(e) => updateEditCondition(i, { metric: e.target.value })} /></div>
+                        <div className="field"><label>Comparator</label>
+                          <select value={c.comparator} onChange={(e) => updateEditCondition(i, { comparator: e.target.value })}>
+                            <option value="above">Above</option><option value="below">Below</option>
+                            <option value="crosses_above">Crosses above</option><option value="crosses_below">Crosses below</option>
+                          </select>
                         </div>
                       </div>
-                      <div className={"pnl " + ((t.pnl || 0) >= 0 ? "pos" : "neg")}>{t.pnl != null ? fmt(t.pnl) : "—"}</div>
-                      {t.status === "open" && !t.is_live && (
-                        <button className="pill" style={{ width: "100%", marginTop: 6 }} onClick={() => markLive(t.id)}>I took this trade live</button>
-                      )}
+                      <div className="row">
+                        <div className="field"><label>Compare to</label>
+                          <select value={c.value_type} onChange={(e) => updateEditCondition(i, { value_type: e.target.value })}>
+                            <option value="number">A number</option><option value="metric">Another metric</option>
+                          </select>
+                        </div>
+                        <div className="field"><label>Value</label><input value={c.value} onChange={(e) => updateEditCondition(i, { value: c.value_type === "number" ? parseFloat(e.target.value) : e.target.value })} /></div>
+                      </div>
+                      <button className="ghost" style={{ color: "var(--loss)" }} onClick={() => removeEditCondition(i)}>Remove condition</button>
                     </div>
                   ))}
+                  <button className="ghost" onClick={addEditCondition}>+ Add condition</button>
+
+                  <div className="row" style={{ marginTop: 10 }}>
+                    <div className="field"><label>Window start</label><input value={editValues.window_start} onChange={(e) => setEditValues({ ...editValues, window_start: e.target.value })} /></div>
+                    <div className="field"><label>Window end</label><input value={editValues.window_end} onChange={(e) => setEditValues({ ...editValues, window_end: e.target.value })} /></div>
+                  </div>
+
+                  <div className="field">
+                    <label>Stop-loss type</label>
+                    <select value={editValues.stop_loss_type} onChange={(e) => setEditValues({ ...editValues, stop_loss_type: e.target.value })}>
+                      <option value="percent">Fixed percent from entry</option>
+                      <option value="candle_metric">A price level (e.g. previous candle's high/low)</option>
+                    </select>
+                  </div>
+                  {editValues.stop_loss_type === "percent" ? (
+                    <div className="field"><label>Stop loss %</label><input type="number" step="0.1" value={editValues.stop_loss_value || ""} onChange={(e) => setEditValues({ ...editValues, stop_loss_value: parseFloat(e.target.value) })} /></div>
+                  ) : (
+                    <div className="field"><label>Stop-loss metric</label><input value={editValues.stop_loss_metric || ""} onChange={(e) => setEditValues({ ...editValues, stop_loss_metric: e.target.value })} placeholder="prev_candle_high or prev_candle_low" /></div>
+                  )}
+
+                  <div className="field">
+                    <label>Target type</label>
+                    <select value={editValues.target_type} onChange={(e) => setEditValues({ ...editValues, target_type: e.target.value })}>
+                      <option value="percent">Fixed percent from entry</option>
+                      <option value="r_multiple">Risk multiple (e.g. 5 = 1:5 risk:reward)</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>{editValues.target_type === "r_multiple" ? "Risk multiple" : "Target %"}</label>
+                    <input type="number" step="0.1" value={editValues.target_value || ""} onChange={(e) => setEditValues({ ...editValues, target_value: parseFloat(e.target.value) })} />
+                  </div>
+
+                  <div className="field">
+                    <label>Max risk in points (optional)</label>
+                    <input type="number" value={editValues.max_risk_points || ""} onChange={(e) => setEditValues({ ...editValues, max_risk_points: e.target.value ? parseFloat(e.target.value) : null })} />
+                  </div>
+
+                  <div className="field">
+                    <label>Position sizing</label>
+                    <select value={editValues.position_sizing_mode} onChange={(e) => setEditValues({ ...editValues, position_sizing_mode: e.target.value })}>
+                      <option value="fixed_qty">Fixed quantity every trade</option>
+                      <option value="risk_based">Risk a % of capital per trade</option>
+                    </select>
+                  </div>
+                  {editValues.position_sizing_mode === "fixed_qty" ? (
+                    <div className="field"><label>Quantity</label><input type="number" value={editValues.qty} onChange={(e) => setEditValues({ ...editValues, qty: parseFloat(e.target.value) })} /></div>
+                  ) : (
+                    <>
+                      <div className="row">
+                        <div className="field"><label>Capital</label><input type="number" value={editValues.capital_base || ""} onChange={(e) => setEditValues({ ...editValues, capital_base: parseFloat(e.target.value) })} /></div>
+                        <div className="field"><label>Risk per trade (%)</label><input type="number" step="0.1" value={editValues.risk_pct || ""} onChange={(e) => setEditValues({ ...editValues, risk_pct: parseFloat(e.target.value) })} /></div>
+                      </div>
+                      <div className="field"><label>Lot size</label><input type="number" value={editValues.lot_size} onChange={(e) => setEditValues({ ...editValues, lot_size: parseFloat(e.target.value) })} /></div>
+                    </>
+                  )}
+
+                  {s.instrument_key.startsWith("DELTA|") && (
+                    <>
+                      <div className="field">
+                        <label>Execution</label>
+                        <select value={editValues.execution_mode} onChange={(e) => setEditValues({ ...editValues, execution_mode: e.target.value })}>
+                          <option value="paper">Paper trading (simulated)</option>
+                          <option value="delta_live">🔴 Go Live — real orders</option>
+                        </select>
+                      </div>
+                      {editValues.execution_mode === "delta_live" && (
+                        <div className="row">
+                          <div className="field"><label>Leverage</label><input type="number" value={editValues.leverage} onChange={(e) => setEditValues({ ...editValues, leverage: parseFloat(e.target.value) })} /></div>
+                          <div className="field"><label>Max position (USD)</label><input type="number" value={editValues.max_position_usd || ""} onChange={(e) => setEditValues({ ...editValues, max_position_usd: e.target.value ? parseFloat(e.target.value) : null })} /></div>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  <button className="primary" onClick={() => saveEdit(s.id)}>Save changes</button>
+                  <button className="ghost" onClick={() => { setEditingId(null); setEditValues(null); }}>Cancel</button>
                 </div>
+              ) : (
+                <>
+                  <div className="row" style={{ marginTop: 10 }}>
+                    <div><div className="trade-meta">Paper trades</div><div className="pnl">{closed.length}</div></div>
+                    <div><div className="trade-meta">Win rate</div><div className="pnl">{closed.length ? Math.round((wins / closed.length) * 100) : 0}%</div></div>
+                    <div><div className="trade-meta">Net (simulated)</div><div className={"pnl " + (net >= 0 ? "pos" : "neg")}>{fmt(net)}</div></div>
+                  </div>
+                  <button className="ghost" onClick={() => setExpanded(expanded === s.id ? null : s.id)}>{expanded === s.id ? "Hide trades" : "View trades"}</button>
+                  {expanded === s.id && (
+                    <div style={{ marginTop: 10 }}>
+                      {trades.length === 0 ? <div className="muted-note">No paper trades logged yet.</div> : trades.map((t) => (
+                        <div className="trade-row" key={t.id} style={{ flexWrap: "wrap" }}>
+                          <div>
+                            <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price} {t.real_order && <span style={{ color: "var(--loss)" }}>🔴 REAL ORDER</span>} {t.is_live && !t.real_order && <span style={{ color: "var(--loss)" }}>● LIVE</span>}</div>
+                            <div className="trade-meta">
+                              {new Date(t.entry_time).toLocaleString("en-IN")}{" "}
+                              {t.status === "closed" ? `→ ${t.exit_price}` : t.status === "pending_confirmation" ? "(awaiting your confirmation)" : "(open)"}
+                            </div>
+                          </div>
+                          <div className={"pnl " + ((t.pnl || 0) >= 0 ? "pos" : "neg")}>{t.pnl != null ? fmt(t.pnl) : "—"}</div>
+                          {t.status === "open" && !t.is_live && (
+                            <button className="pill" style={{ width: "100%", marginTop: 6 }} onClick={() => markLive(t.id)}>I took this trade live</button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button className="ghost" onClick={() => startEdit(s)}>Edit strategy</button>
+                  <button className="ghost" style={{ color: "var(--loss)", marginTop: 8 }} onClick={() => deleteStrategy(s.id)}>Delete strategy</button>
+                </>
               )}
-              <button className="ghost" style={{ color: "var(--loss)", marginTop: 8 }} onClick={() => deleteStrategy(s.id)}>Delete strategy</button>
             </div>
           );
         })
