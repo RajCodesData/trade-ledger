@@ -672,6 +672,9 @@ function AutoTradeTab({ session }) {
   const [paperTrades, setPaperTrades] = useState([]);
   const [description, setDescription] = useState("");
   const [strategyName, setStrategyName] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
+  const [videoParsing, setVideoParsing] = useState(false);
+  const [videoError, setVideoError] = useState("");
   const [instrumentKey, setInstrumentKey] = useState("NSE_INDEX|Nifty 50");
   const [customInstrument, setCustomInstrument] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -698,6 +701,45 @@ function AutoTradeTab({ session }) {
       setNewSignalCount(newCount);
       localStorage.setItem(lastSeenKey, pt[0].entry_time);
     }
+  }
+
+  async function parseVideo() {
+    setVideoError(""); setDraft(null);
+    if (!videoUrl.trim()) { setVideoError("Paste a YouTube link first."); return; }
+    setVideoParsing(true);
+    try {
+      const res = await fetch("/api/strategy/parse-video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: videoUrl.trim() }) });
+      const data = await res.json();
+      if (data.error) { setVideoError(data.error); setVideoParsing(false); return; }
+      const r = data.rules;
+      setDescription(`Extracted from YouTube video: ${data.videoTitle || videoUrl}`);
+      setStrategyName(r.suggested_name || data.videoTitle?.slice(0, 60) || "");
+      setDraft({
+        direction: r.direction || "long",
+        entry_conditions: r.entry_conditions || [],
+        window_start: r.window_start || "09:15",
+        window_end: r.window_end || "15:15",
+        timeframe: r.timeframe || "5m",
+        stop_loss_type: r.stop_loss_type || "percent",
+        stop_loss_value: r.stop_loss_value ?? 0.5,
+        stop_loss_metric: r.stop_loss_metric || "",
+        target_type: r.target_type || "percent",
+        target_value: r.target_value ?? 1,
+        max_risk_points: r.max_risk_points ?? null,
+        qty: r.qty || 1,
+        summary: r.summary || "",
+        position_sizing_mode: "fixed_qty",
+        capital_base: null,
+        risk_pct: null,
+        lot_size: 1,
+        execution_mode: "paper",
+        leverage: 25,
+        max_position_usd: null,
+      });
+    } catch (e) {
+      setVideoError("Could not reach the video parsing service.");
+    }
+    setVideoParsing(false);
   }
 
   async function parseStrategy() {
@@ -857,6 +899,17 @@ function AutoTradeTab({ session }) {
       {newSignalCount > 0 && (
         <div className="banner info">🔔 {newSignalCount} new signal{newSignalCount > 1 ? "s" : ""} triggered since you last checked. Scroll down to "Your strategies" and tap View trades.</div>
       )}
+
+      <h2 className="section-title">Import from a YouTube video</h2>
+      <div className="card">
+        <div className="field">
+          <label>Video URL</label>
+          <input value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=..." />
+        </div>
+        {videoError && <div className="error-text">{videoError}</div>}
+        <button className="primary" disabled={videoParsing} onClick={parseVideo}>{videoParsing ? "Transcribing & analyzing..." : "Transcribe & extract strategy"}</button>
+        <div className="muted-note">Fetches the video's captions and asks AI to extract any concrete rule-based strategy described in it. Works only if the video has captions available. You'll review and can edit everything before saving — nothing is applied automatically.</div>
+      </div>
 
       <h2 className="section-title">Start from a template</h2>
       <div className="card">
