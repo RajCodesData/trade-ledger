@@ -19,7 +19,8 @@ export async function POST(request) {
     const verify = await deltaVerifyCredentials(env, apiKey.trim(), apiSecret.trim());
     if (!verify.success) {
       const code = verify.error?.code || "unknown_error";
-      return NextResponse.json({ error: `Delta rejected these credentials: ${code}. Double check the key/secret, the environment (testnet vs production), and that "Read Data" permission is enabled.` }, { status: 400 });
+      const detail = verify.error?.message ? ` (${verify.error.message})` : "";
+      return NextResponse.json({ error: `Delta rejected these credentials: ${code}${detail}. Double check the key/secret, the environment (testnet vs production), and that "Read Data" permission is enabled.` }, { status: 400 });
     }
 
     const { error } = await supabaseAdmin.from("delta_connections").upsert({
