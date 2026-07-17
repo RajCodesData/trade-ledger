@@ -196,6 +196,37 @@ async function scanForTouchSinceEntry(instrumentKey, accessToken, entryTime, sto
   return { hit: false };
 }
 
+// Scans through today's candles bar-by-bar (like a real backtest would),
+// instead of only checking the current instant. Catches an entry condition
+// that became true and then reversed between cron checks - exactly the kind
+// of miss that happens with a purely "check right now" approach.
+function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, windowStartMin, windowEndMin, extraMetricName) {
+  const metricNames = collectMetricNames(entryConditions);
+  if (extraMetricName && !metricNames.includes(extraMetricName)) metricNames.push(extraMetricName);
+  let prevMetrics = null;
+  for (let i = 1; i < candles.length; i++) {
+    const cTime = typeof candles[i].time === "number" ? new Date(candles[i].time * 1000) : new Date(candles[i].time);
+    const cIST = new Date(cTime.getTime() + (5.5 * 60 + cTime.getTimezoneOffset()) * 60000);
+    const cMinutes = cIST.getHours() * 60 + cIST.getMinutes();
+    if (cMinutes < windowStartMin || cMinutes > windowEndMin) { prevMetrics = null; continue; }
+
+    const slice = candles.slice(0, i + 1);
+    const ctx = {
+      closes: slice.map((c) => c.close),
+      vwapVal: vwap(slice),
+      dayOpen: candles[0]?.open ?? null,
+      prevHigh, prevLow,
+      prevCandleHigh: candles[i - 1]?.high ?? null,
+      prevCandleLow: candles[i - 1]?.low ?? null,
+    };
+    const currentMetrics = computeAllMetrics(metricNames, ctx);
+    const allMet = entryConditions.every((c) => evaluateCondition(c, currentMetrics, prevMetrics || {}));
+    if (allMet) return { price: candles[i].close, time: candles[i].time, metrics: currentMetrics };
+    prevMetrics = currentMetrics;
+  }
+  return null;
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   if (searchParams.get("secret") !== process.env.PAPER_ENGINE_SECRET) {
@@ -357,28 +388,28 @@ export async function GET(request) {
     const candles = await fetchIntradayCandles(s.instrument_key, conn?.access_token, s.timeframe || "5m");
     if (candles.length < 2) { results.push({ strategy: s.id, skipped: "not enough candle data yet" }); continue; }
     const prevLevels = await fetchPrevDayLevels(s.instrument_key, conn?.access_token);
-    const closes = candles.map((c) => c.close);
-    const ctx = {
-      closes,
-      vwapVal: vwap(candles),
-      dayOpen: candles[0]?.open ?? null,
-      prevHigh: prevLevels?.high ?? null,
-      prevLow: prevLevels?.low ?? null,
-      prevCandleHigh: candles.length >= 2 ? candles[candles.length - 2].high : null,
-      prevCandleLow: candles.length >= 2 ? candles[candles.length - 2].low : null,
-    };
 
-    const metricNames = collectMetricNames(s.entry_conditions);
-    if (s.stop_loss_type === "candle_metric" && s.stop_loss_metric) metricNames.push(s.stop_loss_metric);
-    const currentMetrics = computeAllMetrics(metricNames, ctx);
-    const previousMetrics = s.last_metrics || {};
+    const scanResult = scanCandlesForEntry(candles, s.entry_conditions, prevLevels?.high ?? null, prevLevels?.low ?? null, startMin, endMin, s.stop_loss_type === "candle_metric" ? s.stop_loss_metric : null);
 
-    const allMet = s.entry_conditions.every((c) => evaluateCondition(c, currentMetrics, previousMetrics));
-
-    await supabaseAdmin.from("strategies").update({ last_metrics: currentMetrics }).eq("id", s.id);
+    const allMet = !!scanResult;
+    const currentMetrics = scanResult?.metrics || {};
 
     if (allMet) {
-      const entryPrice = currentMetrics.price ?? closes[closes.length - 1];
+      const candleClosePrice = scanResult.price;
+      // Use a fresh live price at the moment of entry instead of the (possibly
+      // several-minutes-stale) candle close used to evaluate the conditions.
+      const freshLtp = await fetchLtp(s.instrument_key, conn?.access_token);
+      const entryPrice = freshLtp ?? candleClosePrice;
+
+      // Anti-chase guard: if price has already moved too far from where the
+      // condition was actually evaluated, skip this cycle rather than enter
+      // at a materially worse price than the signal intended. Default: 0.15%.
+      const maxSlippagePct = s.max_slippage_pct ?? 0.15;
+      const driftPct = Math.abs((entryPrice - candleClosePrice) / candleClosePrice) * 100;
+      if (driftPct > maxSlippagePct) {
+        results.push({ strategy: s.id, action: "skipped_price_moved_too_far", candleClosePrice, freshLtp, driftPct });
+        continue;
+      }
 
       let stopPrice;
       if (s.stop_loss_type === "candle_metric" && s.stop_loss_metric) {

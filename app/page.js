@@ -792,7 +792,7 @@ function AutoTradeTab({ session }) {
         stop_loss_metric: r.stop_loss_metric || "",
         target_type: r.target_type || "percent",
         target_value: r.target_value ?? 1,
-        max_risk_points: r.max_risk_points ?? null,
+        max_risk_points: r.max_risk_points ?? null, max_slippage_pct: 0.15,
         qty: r.qty || 1,
         summary: r.summary || "",
         position_sizing_mode: "fixed_qty",
@@ -835,7 +835,7 @@ function AutoTradeTab({ session }) {
         stop_loss_metric: data.rules.stop_loss_metric || "",
         target_type: data.rules.target_type || "percent",
         target_value: data.rules.target_value ?? 1,
-        max_risk_points: data.rules.max_risk_points ?? null,
+        max_risk_points: data.rules.max_risk_points ?? null, max_slippage_pct: 0.15,
         qty: data.rules.qty || 1,
         summary: data.rules.summary || "",
         position_sizing_mode: "fixed_qty",
@@ -860,7 +860,7 @@ function AutoTradeTab({ session }) {
       instrument_key: instrumentKey, direction: draft.direction,
       entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end, timeframe: draft.timeframe,
       stop_loss_type: draft.stop_loss_type, stop_loss_value: draft.stop_loss_value, stop_loss_metric: draft.stop_loss_metric,
-      target_type: draft.target_type, target_value: draft.target_value, max_risk_points: draft.max_risk_points,
+      target_type: draft.target_type, target_value: draft.target_value, max_risk_points: draft.max_risk_points, max_slippage_pct: draft.max_slippage_pct,
       qty: draft.qty, active: armed,
       position_sizing_mode: draft.position_sizing_mode, capital_base: draft.capital_base,
       risk_pct: draft.risk_pct, lot_size: draft.lot_size,
@@ -908,6 +908,7 @@ function AutoTradeTab({ session }) {
       target_type: s.target_type,
       target_value: s.target_value,
       max_risk_points: s.max_risk_points,
+      max_slippage_pct: s.max_slippage_pct ?? 0.15,
       position_sizing_mode: s.position_sizing_mode,
       qty: s.qty,
       capital_base: s.capital_base,
@@ -1124,6 +1125,11 @@ function AutoTradeTab({ session }) {
             </div>
 
             <div className="field">
+              <label>Max entry slippage % (skip if price has already moved this much since the signal)</label>
+              <input type="number" step="0.05" value={draft.max_slippage_pct} onChange={(e) => setDraft({ ...draft, max_slippage_pct: parseFloat(e.target.value) })} />
+            </div>
+
+            <div className="field">
               <label>Position sizing</label>
               <select value={draft.position_sizing_mode} onChange={(e) => setDraft({ ...draft, position_sizing_mode: e.target.value })}>
                 <option value="fixed_qty">Fixed quantity every trade</option>
@@ -1268,6 +1274,11 @@ function AutoTradeTab({ session }) {
                   <div className="field">
                     <label>Max risk in points (optional)</label>
                     <input type="number" value={editValues.max_risk_points || ""} onChange={(e) => setEditValues({ ...editValues, max_risk_points: e.target.value ? parseFloat(e.target.value) : null })} />
+                  </div>
+
+                  <div className="field">
+                    <label>Max entry slippage % (skip if price moved this much since the signal)</label>
+                    <input type="number" step="0.05" value={editValues.max_slippage_pct} onChange={(e) => setEditValues({ ...editValues, max_slippage_pct: parseFloat(e.target.value) })} />
                   </div>
 
                   <div className="field">
