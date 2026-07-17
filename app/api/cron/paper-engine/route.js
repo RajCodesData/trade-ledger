@@ -178,6 +178,24 @@ function evaluateCondition(cond, current, previous) {
   return false;
 }
 
+// Checking only the current price at each cron run can miss a stop/target
+// that was touched and reversed between checks. This scans 1-minute candles
+// since entry to catch that - much closer to what a real order would have done.
+async function scanForTouchSinceEntry(instrumentKey, accessToken, entryTime, stopPrice, targetPrice, direction) {
+  const candles = await fetchIntradayCandles(instrumentKey, accessToken, "1m");
+  const entryMs = new Date(entryTime).getTime();
+  for (const c of candles) {
+    const cTime = typeof c.time === "number" ? c.time * 1000 : new Date(c.time).getTime();
+    if (cTime < entryMs) continue;
+    const stopHit = direction === "long" ? c.low <= stopPrice : c.high >= stopPrice;
+    const targetHit = direction === "long" ? c.high >= targetPrice : c.low <= targetPrice;
+    // If both were touched in the same candle we can't know which came first - assume the worse outcome (stop) for a conservative simulation.
+    if (stopHit) return { hit: true, hitType: "stop", price: stopPrice };
+    if (targetHit) return { hit: true, hitType: "target", price: targetPrice };
+  }
+  return { hit: false };
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   if (searchParams.get("secret") !== process.env.PAPER_ENGINE_SECRET) {
@@ -211,8 +229,10 @@ export async function GET(request) {
     const startMin = timeStrToMinutes(s.window_start);
     const endMin = timeStrToMinutes(s.window_end);
 
-    const { data: openTrade } = await supabaseAdmin.from("paper_trades").select("*")
-      .in("status", ["open", "pending_confirmation"]).eq("strategy_id", s.id).eq("trade_date", today).maybeSingle();
+    const { data: openTradeRows } = await supabaseAdmin.from("paper_trades").select("*")
+      .in("status", ["open", "pending_confirmation"]).eq("strategy_id", s.id).eq("trade_date", today)
+      .order("entry_time", { ascending: false }).limit(1);
+    const openTrade = openTradeRows?.[0] || null;
 
     // Nagging for an unconfirmed live trade happens regardless of market hours or window.
     if (openTrade?.status === "pending_confirmation") {
@@ -287,33 +307,45 @@ export async function GET(request) {
 
       const ltp = await fetchLtp(s.instrument_key, conn?.access_token);
       if (!ltp) { results.push({ strategy: s.id, skipped: "no ltp" }); continue; }
-      let hit = false, hitType = null;
+      let hit = false, hitType = null, hitPrice = ltp;
+
       if (openTrade.stop_price != null && openTrade.target_price != null) {
-        const stopHit = s.direction === "long" ? ltp <= openTrade.stop_price : ltp >= openTrade.stop_price;
-        const targetHit = s.direction === "long" ? ltp >= openTrade.target_price : ltp <= openTrade.target_price;
-        hit = stopHit || targetHit;
-        hitType = stopHit ? "stop" : targetHit ? "target" : null;
+        // Prefer scanning candles since entry - catches a touch that reversed between checks.
+        try {
+          const scan = await scanForTouchSinceEntry(s.instrument_key, conn?.access_token, openTrade.entry_time, openTrade.stop_price, openTrade.target_price, s.direction);
+          if (scan.hit) { hit = true; hitType = scan.hitType; hitPrice = scan.price; }
+        } catch (e) {
+          console.error("touch scan failed, falling back to LTP check:", e);
+        }
+        if (!hit) {
+          const stopHit = s.direction === "long" ? ltp <= openTrade.stop_price : ltp >= openTrade.stop_price;
+          const targetHit = s.direction === "long" ? ltp >= openTrade.target_price : ltp <= openTrade.target_price;
+          hit = stopHit || targetHit;
+          hitType = stopHit ? "stop" : targetHit ? "target" : null;
+          hitPrice = ltp;
+        }
       } else {
         const moveFavorable = s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp;
         const movePct = (moveFavorable / openTrade.entry_price) * 100;
         hit = movePct <= -Math.abs(s.stop_loss_pct || 0.5) || movePct >= Math.abs(s.target_pct || 1);
         hitType = movePct <= -Math.abs(s.stop_loss_pct || 0.5) ? "stop" : "target";
+        hitPrice = ltp;
       }
 
       if (hit) {
         const qty = openTrade.qty || s.qty || 1;
-        const pnl = (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty;
+        const pnl = (s.direction === "long" ? hitPrice - openTrade.entry_price : openTrade.entry_price - hitPrice) * qty;
 
         if (openTrade.is_live) {
           // Real money is on the line here - don't silently close it. Make them confirm.
           await supabaseAdmin.from("paper_trades").update({
-            status: "pending_confirmation", exit_price: ltp, exit_time: new Date().toISOString(),
+            status: "pending_confirmation", exit_price: hitPrice, exit_time: new Date().toISOString(),
             pnl, hit_type: hitType, last_nag_sent_at: new Date().toISOString(),
           }).eq("id", openTrade.id);
-          await notifyHit(s, { ...openTrade, exit_price: ltp, pnl, hit_type: hitType }, false);
+          await notifyHit(s, { ...openTrade, exit_price: hitPrice, pnl, hit_type: hitType }, false);
           results.push({ strategy: s.id, action: "live_hit_pending_confirmation", hitType, pnl });
         } else {
-          await supabaseAdmin.from("paper_trades").update({ status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl }).eq("id", openTrade.id);
+          await supabaseAdmin.from("paper_trades").update({ status: "closed", exit_price: hitPrice, exit_time: new Date().toISOString(), pnl }).eq("id", openTrade.id);
           results.push({ strategy: s.id, action: "closed", pnl });
         }
       } else {
@@ -407,6 +439,21 @@ export async function GET(request) {
           }
           if (contracts < 1) { results.push({ strategy: s.id, skipped: "position size rounds to zero contracts" }); continue; }
 
+          // Reserve this strategy's slot for today BEFORE placing any real order.
+          // If this fails, another overlapping run already claimed it - stop
+          // here, no real order gets placed at all.
+          const { data: reservation, error: reserveErr } = await supabaseAdmin.from("paper_trades").insert({
+            strategy_id: s.id, user_id: s.user_id, instrument_key: s.instrument_key,
+            side: s.direction === "long" ? "buy" : "sell", entry_price: entryPrice,
+            entry_time: new Date().toISOString(), status: "open", trade_date: today,
+            stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints, qty,
+            real_order: true,
+          }).select().single();
+          if (reserveErr) {
+            results.push({ strategy: s.id, action: "entry_skipped_already_open", detail: reserveErr.message });
+            continue;
+          }
+
           await deltaSetLeverage(dConn.environment, apiKey, apiSecret, product.id, s.leverage || 25);
           const orderRes = await deltaPlaceBracketEntry(dConn.environment, apiKey, apiSecret, {
             productId: product.id,
@@ -417,18 +464,17 @@ export async function GET(request) {
           });
 
           if (!orderRes.success) {
+            // The real order failed - release the reservation, no trade actually happened.
+            await supabaseAdmin.from("paper_trades").delete().eq("id", reservation.id);
             results.push({ strategy: s.id, action: "delta_order_failed", error: orderRes.error });
             continue;
           }
 
           const filledPrice = parseFloat(orderRes.result.limit_price || entryPrice);
-          await supabaseAdmin.from("paper_trades").insert({
-            strategy_id: s.id, user_id: s.user_id, instrument_key: s.instrument_key,
-            side: s.direction === "long" ? "buy" : "sell", entry_price: filledPrice,
-            entry_time: new Date().toISOString(), status: "open", trade_date: today,
-            stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints, qty,
-            real_order: true, delta_order_id: String(orderRes.result.id), delta_product_id: product.id,
-          });
+          await supabaseAdmin.from("paper_trades").update({
+            entry_price: filledPrice,
+            delta_order_id: String(orderRes.result.id), delta_product_id: product.id,
+          }).eq("id", reservation.id);
           results.push({ strategy: s.id, action: "real_order_placed", contracts, price: filledPrice });
 
           try {
@@ -452,12 +498,17 @@ export async function GET(request) {
         continue;
       }
 
-      await supabaseAdmin.from("paper_trades").insert({
+      const { error: insertErr } = await supabaseAdmin.from("paper_trades").insert({
         strategy_id: s.id, user_id: s.user_id, instrument_key: s.instrument_key,
         side: s.direction === "long" ? "buy" : "sell", entry_price: entryPrice,
         entry_time: new Date().toISOString(), status: "open", trade_date: today,
         stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints, qty,
       });
+      if (insertErr) {
+        // Another overlapping run already opened a trade for this strategy today - not an error, just a race we lost gracefully.
+        results.push({ strategy: s.id, action: "entry_skipped_already_open", detail: insertErr.message });
+        continue;
+      }
       results.push({ strategy: s.id, action: "entered", price: entryPrice, stopPrice, targetPrice, qty });
 
       // Fire an email alert - best-effort, never blocks the main loop.

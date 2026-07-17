@@ -940,6 +940,12 @@ function AutoTradeTab({ session }) {
     load();
   }
 
+  async function closeTradeManually(tradeId) {
+    if (!confirm("Close this trade at ₹0 P&L? Use this to clean up stuck or duplicate entries.")) return;
+    await supabase.from("paper_trades").update({ status: "closed", exit_time: new Date().toISOString(), pnl: 0, notes: "Manually closed (cleanup)" }).eq("id", tradeId);
+    load();
+  }
+
   async function uploadScreenshot(tradeId, file) {
     const path = `${user.id}/${tradeId}-${Date.now()}.${file.name.split(".").pop()}`;
     const { error: upErr } = await supabase.storage.from("trade-screenshots").upload(path, file);
@@ -1326,6 +1332,9 @@ function AutoTradeTab({ session }) {
                           <div className={"pnl " + ((t.pnl || 0) >= 0 ? "pos" : "neg")}>{t.pnl != null ? fmt(t.pnl) : "—"}</div>
                           {t.status === "open" && !t.is_live && (
                             <button className="pill" style={{ width: "100%", marginTop: 6 }} onClick={() => markLive(t.id)}>I took this trade live</button>
+                          )}
+                          {t.status === "open" && (
+                            <button className="ghost" style={{ width: "100%", marginTop: 6, color: "var(--loss)" }} onClick={() => closeTradeManually(t.id)}>Close (cleanup)</button>
                           )}
                         </div>
                       ))}
