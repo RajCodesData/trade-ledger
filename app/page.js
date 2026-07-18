@@ -743,6 +743,10 @@ function AutoTradeTab({ session }) {
   const [videoUrl, setVideoUrl] = useState("");
   const [videoParsing, setVideoParsing] = useState(false);
   const [videoError, setVideoError] = useState("");
+  const [previewTimeframe, setPreviewTimeframe] = useState("5m");
+  const [previewValues, setPreviewValues] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
   const [instrumentKey, setInstrumentKey] = useState("NSE_INDEX|Nifty 50");
   const [customInstrument, setCustomInstrument] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -769,6 +773,22 @@ function AutoTradeTab({ session }) {
       setNewSignalCount(newCount);
       localStorage.setItem(lastSeenKey, pt[0].entry_time);
     }
+  }
+
+  async function checkPreview() {
+    setPreviewError(""); setPreviewValues(null); setPreviewLoading(true);
+    try {
+      const res = await fetch("/api/strategy/preview-indicators", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ instrumentKey, timeframe: previewTimeframe }),
+      });
+      const data = await res.json();
+      if (data.error) { setPreviewError(data.error); setPreviewLoading(false); return; }
+      setPreviewValues(data.values);
+    } catch (e) {
+      setPreviewError("Could not reach the preview service.");
+    }
+    setPreviewLoading(false);
   }
 
   async function parseVideo() {
@@ -982,6 +1002,50 @@ function AutoTradeTab({ session }) {
       {newSignalCount > 0 && (
         <div className="banner info">🔔 {newSignalCount} new signal{newSignalCount > 1 ? "s" : ""} triggered since you last checked. Scroll down to "Your strategies" and tap View trades.</div>
       )}
+
+      <h2 className="section-title">Preview indicators</h2>
+      <div className="card">
+        <div className="muted-note" style={{ marginTop: 0 }}>Check current values before deciding on a threshold — no strategy needed, nothing gets saved or armed.</div>
+        <div className="row">
+          <div className="field">
+            <label>Instrument</label>
+            <select value={COMMON_INSTRUMENTS.some((i) => i.value === instrumentKey) ? instrumentKey : "__custom__"} onChange={(e) => e.target.value !== "__custom__" && setInstrumentKey(e.target.value)}>
+              {COMMON_INSTRUMENTS.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+              <option value="__custom__">Uses instrument key below</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Timeframe</label>
+            <select value={previewTimeframe} onChange={(e) => setPreviewTimeframe(e.target.value)}>
+              <option value="1m">1 minute</option><option value="3m">3 minutes</option><option value="5m">5 minutes</option>
+              <option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option>
+            </select>
+          </div>
+        </div>
+        {previewError && <div className="error-text">{previewError}</div>}
+        <button className="primary" disabled={previewLoading} onClick={checkPreview}>{previewLoading ? "Checking..." : "Check current values"}</button>
+        {previewValues && (
+          <div className="stat-grid" style={{ marginTop: 14 }}>
+            <div className="stat-box"><div className="label">Price</div><div className="value">{previewValues.price?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">VWAP</div><div className="value">{previewValues.vwap?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">EMA 9</div><div className="value">{previewValues.ema_9?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">EMA 21</div><div className="value">{previewValues.ema_21?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">EMA 50</div><div className="value">{previewValues.ema_50?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">SMA 20</div><div className="value">{previewValues.sma_20?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">RSI 14</div><div className="value">{previewValues.rsi_14?.toFixed(1) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">ADX 14</div><div className="value">{previewValues.adx_14?.toFixed(1) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">Prev candle high</div><div className="value">{previewValues.prev_candle_high?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">Prev candle low</div><div className="value">{previewValues.prev_candle_low?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">Prev day high</div><div className="value">{previewValues.prev_day_high?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">Prev day low</div><div className="value">{previewValues.prev_day_low?.toFixed(2) ?? "—"}</div></div>
+          </div>
+        )}
+        {previewValues?.adx_14 != null && (
+          <div className="muted-note">
+            ADX 14 is {previewValues.adx_14.toFixed(1)} — {previewValues.adx_14 < 20 ? "below 20, generally considered non-trending/choppy right now." : previewValues.adx_14 < 25 ? "in the 20-25 range, borderline." : "above 25, generally considered trending right now."}
+          </div>
+        )}
+      </div>
 
       <h2 className="section-title">Import from a YouTube video</h2>
       <div className="card">
