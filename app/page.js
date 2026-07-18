@@ -855,7 +855,7 @@ function AutoTradeTab({ session }) {
 
   async function saveStrategy(armed) {
     setSaving(true);
-    await supabase.from("strategies").insert({
+    const { error } = await supabase.from("strategies").insert({
       user_id: user.id, name: strategyName.trim() || description.slice(0, 60), description,
       instrument_key: instrumentKey, direction: draft.direction,
       entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end, timeframe: draft.timeframe,
@@ -867,6 +867,10 @@ function AutoTradeTab({ session }) {
       execution_mode: draft.execution_mode, leverage: draft.leverage, max_position_usd: draft.max_position_usd,
     });
     setSaving(false);
+    if (error) {
+      alert("Save failed: " + error.message + "\n\nThis usually means a database migration hasn't been run yet.");
+      return;
+    }
     setDescription(""); setStrategyName(""); setDraft(null);
     load();
   }
@@ -931,7 +935,11 @@ function AutoTradeTab({ session }) {
     setEditValues({ ...editValues, entry_conditions: editValues.entry_conditions.filter((_, idx) => idx !== i) });
   }
   async function saveEdit(id) {
-    await supabase.from("strategies").update(editValues).eq("id", id);
+    const { error } = await supabase.from("strategies").update(editValues).eq("id", id);
+    if (error) {
+      alert("Save failed: " + error.message + "\n\nThis usually means a database migration hasn't been run yet.");
+      return;
+    }
     setEditingId(null); setEditValues(null);
     load();
   }
