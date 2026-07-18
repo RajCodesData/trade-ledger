@@ -7,7 +7,7 @@ The JSON must match this exact shape:
   "direction": "long" | "short",
   "entry_conditions": [
     {
-      "metric": string,       // one of: "price", "vwap", "day_open", "prev_day_high", "prev_day_low", "prev_candle_high", "prev_candle_low", or "sma_N" / "ema_N" / "rsi_N" where N is a period like 9, 20, 50, 14
+      "metric": string,       // one of: "price", "vwap", "day_open", "prev_day_high", "prev_day_low", "prev_candle_high", "prev_candle_low", or "sma_N" / "ema_N" / "rsi_N" / "adx_N" where N is a period like 9, 20, 50, 14 (adx_N measures trend strength, not direction - typically compared "above" a number like 20-25 to filter for trending conditions)
       "comparator": "above" | "below" | "crosses_above" | "crosses_below",
       "value_type": "number" | "metric",
       "value": number or metric-name-string

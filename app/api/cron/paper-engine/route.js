@@ -134,6 +134,53 @@ function vwap(candles) {
   return cumV > 0 ? cumPV / cumV : null;
 }
 
+// ADX (Average Directional Index) - measures trend strength, not direction.
+// Used purely as a filter: "only look for entries when the market is
+// actually trending," layered on top of whatever entry logic already exists.
+function trueRangeSeries(candles) {
+  return candles.map((c, i) => {
+    if (i === 0) return c.high - c.low;
+    return Math.max(c.high - c.low, Math.abs(c.high - candles[i - 1].close), Math.abs(c.low - candles[i - 1].close));
+  });
+}
+function wilderSmooth(arr, period) {
+  const out = [];
+  let sum = arr.slice(0, period).reduce((a, b) => a + b, 0);
+  out[period - 1] = sum;
+  for (let i = period; i < arr.length; i++) {
+    sum = out[i - 1] - out[i - 1] / period + arr[i];
+    out[i] = sum;
+  }
+  return out;
+}
+function adx(candles, period) {
+  if (candles.length < period * 2) return null;
+  const plusDM = [0], minusDM = [0];
+  for (let i = 1; i < candles.length; i++) {
+    const up = candles[i].high - candles[i - 1].high;
+    const down = candles[i - 1].low - candles[i].low;
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+  }
+  const tr = trueRangeSeries(candles);
+  const trS = wilderSmooth(tr, period);
+  const plusS = wilderSmooth(plusDM, period);
+  const minusS = wilderSmooth(minusDM, period);
+
+  const dx = [];
+  for (let i = period - 1; i < candles.length; i++) {
+    if (!trS[i]) continue;
+    const plusDI = 100 * (plusS[i] / trS[i]);
+    const minusDI = 100 * (minusS[i] / trS[i]);
+    const sum = plusDI + minusDI;
+    dx.push(sum === 0 ? 0 : (100 * Math.abs(plusDI - minusDI)) / sum);
+  }
+  if (dx.length < period) return null;
+  let adxVal = dx.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dx.length; i++) adxVal = (adxVal * (period - 1) + dx[i]) / period;
+  return adxVal;
+}
+
 function getMetric(name, ctx) {
   if (name === "price") return ctx.closes[ctx.closes.length - 1] ?? null;
   if (name === "vwap") return ctx.vwapVal;
@@ -146,6 +193,7 @@ function getMetric(name, ctx) {
   if ((m = /^sma_(\d+)$/.exec(name))) return sma(ctx.closes, parseInt(m[1]));
   if ((m = /^ema_(\d+)$/.exec(name))) return ema(ctx.closes, parseInt(m[1]));
   if ((m = /^rsi_(\d+)$/.exec(name))) return rsi(ctx.closes, parseInt(m[1]));
+  if ((m = /^adx_(\d+)$/.exec(name))) return ctx.candles ? adx(ctx.candles, parseInt(m[1])) : null;
   return null;
 }
 
@@ -214,6 +262,7 @@ function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, window
     const slice = candles.slice(0, i + 1);
     const ctx = {
       closes: slice.map((c) => c.close),
+      candles: slice,
       vwapVal: vwap(slice),
       dayOpen: candles[0]?.open ?? null,
       prevHigh, prevLow,

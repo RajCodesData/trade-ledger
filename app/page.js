@@ -1083,7 +1083,7 @@ function AutoTradeTab({ session }) {
               </div>
             ))}
             <button className="ghost" onClick={addCondition}>+ Add another condition</button>
-            <div className="muted-note">Metrics: price, vwap, day_open, prev_day_high, prev_day_low, sma_N, ema_N, rsi_N (e.g. sma_20, ema_9, rsi_14)</div>
+            <div className="muted-note">Metrics: price, vwap, day_open, prev_day_high, prev_day_low, sma_N, ema_N, rsi_N, adx_N (e.g. sma_20, ema_9, rsi_14, adx_14). ADX measures trend strength (not direction) — add "adx_14 above 25" as an extra condition to only trade when the market is actually trending, without changing your other entry logic.</div>
 
             <div className="field">
               <label>Candle timeframe</label>
