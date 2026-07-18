@@ -792,7 +792,7 @@ function AutoTradeTab({ session }) {
         stop_loss_metric: r.stop_loss_metric || "",
         target_type: r.target_type || "percent",
         target_value: r.target_value ?? 1,
-        max_risk_points: r.max_risk_points ?? null, max_slippage_pct: 0.15,
+        max_risk_points: r.max_risk_points ?? null, min_risk_points: r.min_risk_points ?? null, max_slippage_pct: 0.15,
         qty: r.qty || 1,
         summary: r.summary || "",
         position_sizing_mode: "fixed_qty",
@@ -835,7 +835,7 @@ function AutoTradeTab({ session }) {
         stop_loss_metric: data.rules.stop_loss_metric || "",
         target_type: data.rules.target_type || "percent",
         target_value: data.rules.target_value ?? 1,
-        max_risk_points: data.rules.max_risk_points ?? null, max_slippage_pct: 0.15,
+        max_risk_points: data.rules.max_risk_points ?? null, min_risk_points: data.rules.min_risk_points ?? null, max_slippage_pct: 0.15,
         qty: data.rules.qty || 1,
         summary: data.rules.summary || "",
         position_sizing_mode: "fixed_qty",
@@ -860,7 +860,7 @@ function AutoTradeTab({ session }) {
       instrument_key: instrumentKey, direction: draft.direction,
       entry_conditions: draft.entry_conditions, window_start: draft.window_start, window_end: draft.window_end, timeframe: draft.timeframe,
       stop_loss_type: draft.stop_loss_type, stop_loss_value: draft.stop_loss_value, stop_loss_metric: draft.stop_loss_metric,
-      target_type: draft.target_type, target_value: draft.target_value, max_risk_points: draft.max_risk_points, max_slippage_pct: draft.max_slippage_pct,
+      target_type: draft.target_type, target_value: draft.target_value, max_risk_points: draft.max_risk_points, min_risk_points: draft.min_risk_points, max_slippage_pct: draft.max_slippage_pct,
       qty: draft.qty, active: armed,
       position_sizing_mode: draft.position_sizing_mode, capital_base: draft.capital_base,
       risk_pct: draft.risk_pct, lot_size: draft.lot_size,
@@ -907,7 +907,7 @@ function AutoTradeTab({ session }) {
       stop_loss_metric: s.stop_loss_metric,
       target_type: s.target_type,
       target_value: s.target_value,
-      max_risk_points: s.max_risk_points,
+      max_risk_points: s.max_risk_points, min_risk_points: s.min_risk_points,
       max_slippage_pct: s.max_slippage_pct ?? 0.15,
       position_sizing_mode: s.position_sizing_mode,
       qty: s.qty,
@@ -1123,6 +1123,11 @@ function AutoTradeTab({ session }) {
               <label>Max risk in points (optional — skip trade if stop distance exceeds this)</label>
               <input type="number" value={draft.max_risk_points || ""} onChange={(e) => setDraft({ ...draft, max_risk_points: e.target.value ? parseFloat(e.target.value) : null })} placeholder="e.g. 25" />
             </div>
+            <div className="field">
+              <label>Min risk in points (optional — skip trade if stop is too close to be meaningful)</label>
+              <input type="number" value={draft.min_risk_points || ""} onChange={(e) => setDraft({ ...draft, min_risk_points: e.target.value ? parseFloat(e.target.value) : null })} placeholder="e.g. 20" />
+              <div className="muted-note" style={{ marginTop: 0 }}>Especially useful with "previous candle" stops — in choppy periods that level can end up almost touching entry price, producing a noise-level stop that triggers instantly on ordinary wiggling.</div>
+            </div>
 
             <div className="field">
               <label>Max entry slippage % (skip if price has already moved this much since the signal)</label>
@@ -1274,6 +1279,10 @@ function AutoTradeTab({ session }) {
                   <div className="field">
                     <label>Max risk in points (optional)</label>
                     <input type="number" value={editValues.max_risk_points || ""} onChange={(e) => setEditValues({ ...editValues, max_risk_points: e.target.value ? parseFloat(e.target.value) : null })} />
+                  </div>
+                  <div className="field">
+                    <label>Min risk in points (optional)</label>
+                    <input type="number" value={editValues.min_risk_points || ""} onChange={(e) => setEditValues({ ...editValues, min_risk_points: e.target.value ? parseFloat(e.target.value) : null })} placeholder="e.g. 20" />
                   </div>
 
                   <div className="field">

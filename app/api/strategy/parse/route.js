@@ -22,6 +22,7 @@ The JSON must match this exact shape:
   "target_type": "percent" | "r_multiple",
   "target_value": number,          // percent if target_type is "percent", or the R-multiple (e.g. 5 for a 1:5 risk:reward) if "r_multiple"
   "max_risk_points": number or null,  // skip the trade if the stop distance in price points exceeds this; null if no such filter was mentioned
+  "min_risk_points": number or null,  // skip the trade if the stop distance is too small to be meaningful (noise-level); null if not mentioned
   "qty": number,
   "summary": "one plain-English sentence restating the parsed rule, and mention explicitly if any part of the original strategy could not be captured (e.g. trading options instead of the index, or vague volatility filters)"
 }

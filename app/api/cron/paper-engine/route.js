@@ -425,6 +425,10 @@ export async function GET(request) {
         results.push({ strategy: s.id, action: "skipped_risk_too_large", riskPoints });
         continue;
       }
+      if (s.min_risk_points && riskPoints < s.min_risk_points) {
+        results.push({ strategy: s.id, action: "skipped_risk_too_small", riskPoints });
+        continue;
+      }
 
       let targetPrice;
       if (s.target_type === "r_multiple") {
