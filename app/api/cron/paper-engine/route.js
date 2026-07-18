@@ -472,7 +472,11 @@ export async function GET(request) {
           if (!product) { results.push({ strategy: s.id, skipped: "could not fetch delta product info" }); continue; }
 
           const contractValue = parseFloat(product.contract_value);
-          let contracts = Math.round(qty / contractValue);
+          // "fixed_lots" means qty IS the number of Delta contracts directly -
+          // matches how Delta's own trading screen works, no underlying-asset
+          // conversion involved. Every other mode converts qty (in underlying
+          // asset units) into contracts via the contract size.
+          let contracts = s.position_sizing_mode === "fixed_lots" ? Math.round(qty) : Math.round(qty / contractValue);
 
           // Hard cap: never exceed the configured max position size in USD, no matter what the sizing math says.
           if (s.max_position_usd) {

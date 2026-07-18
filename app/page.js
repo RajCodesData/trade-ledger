@@ -1147,11 +1147,20 @@ function AutoTradeTab({ session }) {
               <select value={draft.position_sizing_mode} onChange={(e) => setDraft({ ...draft, position_sizing_mode: e.target.value })}>
                 <option value="fixed_qty">Fixed quantity every trade</option>
                 <option value="risk_based">Risk a % of capital per trade (auto-sized from stop distance)</option>
+                {instrumentKey.startsWith("DELTA|") && <option value="fixed_lots">Fixed number of lots/contracts (matches Delta's own screen)</option>}
               </select>
             </div>
-            {draft.position_sizing_mode === "fixed_qty" ? (
+            {draft.position_sizing_mode === "fixed_qty" && (
               <div className="field"><label>Quantity</label><input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: parseFloat(e.target.value) })} /></div>
-            ) : (
+            )}
+            {draft.position_sizing_mode === "fixed_lots" && (
+              <div className="field">
+                <label>Number of lots (contracts)</label>
+                <input type="number" value={draft.qty} onChange={(e) => setDraft({ ...draft, qty: parseFloat(e.target.value) })} placeholder="e.g. 15" />
+                <div className="muted-note" style={{ marginTop: 0 }}>Enters exactly this many contracts, same as typing a lot size directly on Delta. No underlying-asset conversion involved. Still capped by Max position size below.</div>
+              </div>
+            )}
+            {draft.position_sizing_mode === "risk_based" && (
               <>
                 <div className="row">
                   <div className="field"><label>Capital (₹)</label><input type="number" value={draft.capital_base || ""} onChange={(e) => setDraft({ ...draft, capital_base: parseFloat(e.target.value) })} placeholder="e.g. 100000" /></div>
@@ -1303,11 +1312,20 @@ function AutoTradeTab({ session }) {
                     <select value={editValues.position_sizing_mode} onChange={(e) => setEditValues({ ...editValues, position_sizing_mode: e.target.value })}>
                       <option value="fixed_qty">Fixed quantity every trade</option>
                       <option value="risk_based">Risk a % of capital per trade</option>
+                      {s.instrument_key.startsWith("DELTA|") && <option value="fixed_lots">Fixed number of lots/contracts</option>}
                     </select>
                   </div>
-                  {editValues.position_sizing_mode === "fixed_qty" ? (
+                  {editValues.position_sizing_mode === "fixed_qty" && (
                     <div className="field"><label>Quantity</label><input type="number" value={editValues.qty} onChange={(e) => setEditValues({ ...editValues, qty: parseFloat(e.target.value) })} /></div>
-                  ) : (
+                  )}
+                  {editValues.position_sizing_mode === "fixed_lots" && (
+                    <div className="field">
+                      <label>Number of lots (contracts)</label>
+                      <input type="number" value={editValues.qty} onChange={(e) => setEditValues({ ...editValues, qty: parseFloat(e.target.value) })} placeholder="e.g. 15" />
+                      <div className="muted-note" style={{ marginTop: 0 }}>Enters exactly this many contracts directly, matching Delta's own screen. Still capped by Max position size below.</div>
+                    </div>
+                  )}
+                  {editValues.position_sizing_mode === "risk_based" && (
                     <>
                       <div className="row">
                         <div className="field"><label>Capital</label><input type="number" value={editValues.capital_base || ""} onChange={(e) => setEditValues({ ...editValues, capital_base: parseFloat(e.target.value) })} /></div>
