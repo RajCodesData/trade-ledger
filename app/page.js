@@ -89,8 +89,9 @@ function Logo() {
   return (
     <span className="brand-mark">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-        <path d="M3 17L9 11L13 15L21 6" stroke="#0A0C14" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M15 6H21V12" stroke="#0A0C14" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M5 7H19" stroke="#161311" strokeWidth="2.4" strokeLinecap="round" />
+        <path d="M12 7V18" stroke="#161311" strokeWidth="2.4" strokeLinecap="round" />
+        <path d="M9 18H15" stroke="#161311" strokeWidth="2" strokeLinecap="round" />
       </svg>
     </span>
   );
@@ -124,7 +125,7 @@ function AuthForm() {
   return (
     <div className="screen">
       <div className="auth-wrap">
-        <div className="auth-logo"><Logo />tr<span className="brand-ai">AI</span>der</div>
+        <div className="auth-logo"><Logo /><span className="brand-word">traider</span></div>
         <div className="auth-sub">{mode === "signup" ? "Create your journal account" : "Log in to your journal"}</div>
         <div className="field">
           <label>Email</label>
@@ -185,7 +186,7 @@ function Dashboard({ session }) {
   return (
     <div className="screen">
       <div className="topbar">
-        <div className="brand"><Logo />tr<span className="brand-ai">AI</span>der</div>
+        <div className="brand"><Logo /><span className="brand-word">traider</span></div>
         <button className="icon-btn" onClick={logout}>Log out ⏻</button>
       </div>
 

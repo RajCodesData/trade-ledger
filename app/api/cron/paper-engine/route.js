@@ -282,6 +282,37 @@ export async function GET(request) {
 
     if (nowMinutes >= endMin) {
       if (openTrade && openTrade.status === "open") {
+        if (openTrade.real_order) {
+          // Don't guess at this - check the actual exchange position before
+          // deciding anything. Never silently mark a real order "closed" when
+          // Delta might still have it open with an active bracket order.
+          const dConn = deltaConnByUser[s.user_id];
+          if (dConn?.encrypted_api_key) {
+            try {
+              const apiKey = decrypt(dConn.encrypted_api_key);
+              const apiSecret = decrypt(dConn.encrypted_api_secret);
+              const posRes = await deltaGetPosition(dConn.environment, apiKey, apiSecret, openTrade.delta_product_id);
+              const pos = Array.isArray(posRes.result) ? posRes.result[0] : posRes.result;
+              const stillOpen = pos && Number(pos.size) !== 0;
+              if (!stillOpen) {
+                const ltp = await fetchLtp(s.instrument_key, null);
+                const qty = openTrade.qty || 1;
+                const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty : null;
+                await supabaseAdmin.from("paper_trades").update({
+                  status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl,
+                  notes: "Real order - exit price is estimated. Verify actual result in your Delta Exchange account.",
+                }).eq("id", openTrade.id);
+                results.push({ strategy: s.id, action: "real_position_closed_at_window_end", pnl });
+              } else {
+                results.push({ strategy: s.id, action: "real_position_still_open_past_window_end" });
+              }
+            } catch (e) {
+              console.error("window-end delta position check failed:", e);
+              results.push({ strategy: s.id, skipped: "window-end delta position check error" });
+            }
+          }
+          continue;
+        }
         const ltp = await fetchLtp(s.instrument_key, conn?.access_token);
         if (ltp) {
           const qty = openTrade.qty || s.qty || 1;
@@ -566,7 +597,7 @@ export async function GET(request) {
         if (email) {
           await sendEmail({
             to: email,
-            subject: `TradeLedger: "${s.name}" entry triggered`,
+            subject: `Traider: "${s.name}" entry triggered`,
             html: `<p><b>${s.name}</b> just triggered a paper entry.</p>
                    <p>Instrument: ${s.instrument_key}<br/>
                    Direction: ${s.direction}<br/>
@@ -601,7 +632,7 @@ async function notifyHit(strategy, trade, isRepeat) {
         : `🚨 "${strategy.name}" ${hitLabel} — square off and confirm now`,
       html: `<p style="font-size:16px;"><b>${strategy.name}</b> (${strategy.instrument_key}) ${hitLabel}.</p>
              <p>Entry: ${trade.entry_price}<br/>Exit level: ${trade.exit_price}<br/>Estimated P&L: ${trade.pnl != null ? trade.pnl.toFixed(2) : "—"}</p>
-             <p><b>Square off the real position on your broker right now</b>, then open TradeLedger's Auto tab and upload a screenshot to confirm.</p>
+             <p><b>Square off the real position on your broker right now</b>, then open Traider's Auto tab and upload a screenshot to confirm.</p>
              <p style="color:#c00;">You'll keep receiving this email every ${NAG_INTERVAL_MINUTES} minutes until you confirm.</p>`,
     });
   } catch (e) {
