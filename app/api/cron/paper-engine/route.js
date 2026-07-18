@@ -200,12 +200,13 @@ async function scanForTouchSinceEntry(instrumentKey, accessToken, entryTime, sto
 // instead of only checking the current instant. Catches an entry condition
 // that became true and then reversed between cron checks - exactly the kind
 // of miss that happens with a purely "check right now" approach.
-function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, windowStartMin, windowEndMin, extraMetricName) {
+function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, windowStartMin, windowEndMin, extraMetricName, afterMs) {
   const metricNames = collectMetricNames(entryConditions);
   if (extraMetricName && !metricNames.includes(extraMetricName)) metricNames.push(extraMetricName);
   let prevMetrics = null;
   for (let i = 1; i < candles.length; i++) {
     const cTime = typeof candles[i].time === "number" ? new Date(candles[i].time * 1000) : new Date(candles[i].time);
+    if (afterMs && cTime.getTime() <= afterMs) continue;
     const cIST = new Date(cTime.getTime() + (5.5 * 60 + cTime.getTimezoneOffset()) * 60000);
     const cMinutes = cIST.getHours() * 60 + cIST.getMinutes();
     if (cMinutes < windowStartMin || cMinutes > windowEndMin) { prevMetrics = null; continue; }
@@ -389,7 +390,15 @@ export async function GET(request) {
     if (candles.length < 2) { results.push({ strategy: s.id, skipped: "not enough candle data yet" }); continue; }
     const prevLevels = await fetchPrevDayLevels(s.instrument_key, conn?.access_token);
 
-    const scanResult = scanCandlesForEntry(candles, s.entry_conditions, prevLevels?.high ?? null, prevLevels?.low ?? null, startMin, endMin, s.stop_loss_type === "candle_metric" ? s.stop_loss_metric : null);
+    // Only look for a NEW signal after the last trade closed today - otherwise
+    // an old candle that's still technically true (common in a choppy range)
+    // gets re-discovered and re-traded again and again.
+    const { data: lastClosed } = await supabaseAdmin.from("paper_trades").select("exit_time")
+      .eq("strategy_id", s.id).eq("trade_date", today).eq("status", "closed")
+      .order("exit_time", { ascending: false }).limit(1);
+    const afterMs = lastClosed?.[0]?.exit_time ? new Date(lastClosed[0].exit_time).getTime() : null;
+
+    const scanResult = scanCandlesForEntry(candles, s.entry_conditions, prevLevels?.high ?? null, prevLevels?.low ?? null, startMin, endMin, s.stop_loss_type === "candle_metric" ? s.stop_loss_metric : null, afterMs);
 
     const allMet = !!scanResult;
     const currentMetrics = scanResult?.metrics || {};
