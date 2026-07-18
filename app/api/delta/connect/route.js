@@ -35,12 +35,16 @@ export async function POST(request) {
     // Safety: never let a strategy that was armed against one environment
     // (e.g. testnet) silently keep running after the connection switches to
     // another environment (e.g. production). Force a conscious re-arm.
-    await supabaseAdmin.from("strategies")
+    const { data: disarmed, error: disarmErr } = await supabaseAdmin.from("strategies")
       .update({ active: false })
       .eq("user_id", userData.user.id)
-      .eq("execution_mode", "delta_live");
+      .eq("execution_mode", "delta_live")
+      .eq("active", true)
+      .select();
 
-    return NextResponse.json({ success: true, verified: true, environment: env });
+    if (disarmErr) console.error("Failed to disarm live strategies:", disarmErr);
+
+    return NextResponse.json({ success: true, verified: true, environment: env, disarmedCount: disarmed?.length || 0 });
   } catch (e) {
     console.error(e);
     return NextResponse.json({ error: "Failed to save connection. Check ENCRYPTION_KEY is set correctly in Vercel." }, { status: 500 });

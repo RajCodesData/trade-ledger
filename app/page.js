@@ -1431,7 +1431,10 @@ function BrokerTab({ session, onSynced }) {
       if (!res.ok || !data.success) {
         setDeltaResult({ ok: false, message: data.error || "Failed to save." });
       } else {
-        setDeltaResult({ ok: true, message: `Verified and connected — Delta accepted these credentials for ${data.environment}. Any strategies that were "Go Live" have been paused as a safety measure — go re-arm them individually on the Auto tab to confirm you want them running against ${data.environment}.` });
+        const pauseNote = data.disarmedCount > 0
+          ? ` ${data.disarmedCount} previously-armed live ${data.disarmedCount > 1 ? "strategies got" : "strategy got"} paused as a safety measure — go re-arm on the Auto tab to confirm you want them running against ${data.environment}.`
+          : " No previously-armed live strategies were affected (none were live before this).";
+        setDeltaResult({ ok: true, message: `Verified and connected — Delta accepted these credentials for ${data.environment}.${pauseNote}` });
         setDeltaApiKey(""); setDeltaApiSecret("");
         loadDeltaStatus();
       }
