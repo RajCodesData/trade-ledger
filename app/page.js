@@ -822,7 +822,7 @@ function AutoTradeTab({ session }) {
         lot_size: 1,
         execution_mode: "paper",
         leverage: 25,
-        max_position_usd: null,
+        max_position_usd: null, entry_scan_mode: "full_scan",
       });
     } catch (e) {
       setVideoError("Could not reach the video parsing service.");
@@ -866,6 +866,7 @@ function AutoTradeTab({ session }) {
         execution_mode: "paper",
         leverage: 25,
         max_position_usd: null,
+        entry_scan_mode: "full_scan",
       });
     } catch (e) {
       console.error("strategy parse error:", e);
@@ -886,6 +887,7 @@ function AutoTradeTab({ session }) {
       position_sizing_mode: draft.position_sizing_mode, capital_base: draft.capital_base,
       risk_pct: draft.risk_pct, lot_size: draft.lot_size,
       execution_mode: draft.execution_mode, leverage: draft.leverage, max_position_usd: draft.max_position_usd,
+      entry_scan_mode: draft.entry_scan_mode,
     });
     setSaving(false);
     if (error) {
@@ -942,6 +944,7 @@ function AutoTradeTab({ session }) {
       execution_mode: s.execution_mode,
       leverage: s.leverage,
       max_position_usd: s.max_position_usd,
+      entry_scan_mode: s.entry_scan_mode,
     });
   }
   function updateEditCondition(i, patch) {
@@ -1186,6 +1189,15 @@ function AutoTradeTab({ session }) {
             </div>
             <div className="muted-note" style={{ marginTop: 0 }}>All your EMAs/SMAs/RSI are calculated on candles of this size. Larger timeframes need more history to warm up — NSE instruments only have the current trading day available, so very large timeframes may rarely have enough candles.</div>
 
+            <div className="field">
+              <label>Signal detection</label>
+              <select value={draft.entry_scan_mode} onChange={(e) => setDraft({ ...draft, entry_scan_mode: e.target.value })}>
+                <option value="full_scan">Scan full history (catches signals that reversed between checks)</option>
+                <option value="latest_only">Only check the latest candle vs the one before it</option>
+              </select>
+            </div>
+            <div className="muted-note" style={{ marginTop: 0 }}>"Latest only" is simpler and more predictable but can miss a brief touch that already reversed before the engine checks again — same trade-off that existed before the historical scan was added.</div>
+
             <div className="row" style={{ marginTop: 10 }}>
               <div className="field"><label>Window start</label><input value={draft.window_start} onChange={(e) => setDraft({ ...draft, window_start: e.target.value })} /></div>
               <div className="field"><label>Window end</label><input value={draft.window_end} onChange={(e) => setDraft({ ...draft, window_end: e.target.value })} /></div>
@@ -1325,6 +1337,14 @@ function AutoTradeTab({ session }) {
                         <option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option>
                       </select>
                     </div>
+                  </div>
+
+                  <div className="field">
+                    <label>Signal detection</label>
+                    <select value={editValues.entry_scan_mode} onChange={(e) => setEditValues({ ...editValues, entry_scan_mode: e.target.value })}>
+                      <option value="full_scan">Scan full history (catches signals that reversed between checks)</option>
+                      <option value="latest_only">Only check the latest candle vs the one before it</option>
+                    </select>
                   </div>
 
                   <label style={{ display: "block", fontSize: 12, color: "var(--muted)", marginBottom: 6, marginTop: 8 }}>Entry conditions</label>

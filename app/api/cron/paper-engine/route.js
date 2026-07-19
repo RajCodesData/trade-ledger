@@ -249,11 +249,12 @@ async function scanForTouchSinceEntry(instrumentKey, accessToken, entryTime, sto
 // instead of only checking the current instant. Catches an entry condition
 // that became true and then reversed between cron checks - exactly the kind
 // of miss that happens with a purely "check right now" approach.
-function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, windowStartMin, windowEndMin, extraMetricName, afterMs) {
+function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, windowStartMin, windowEndMin, extraMetricName, afterMs, latestOnly) {
   const metricNames = collectMetricNames(entryConditions);
   if (extraMetricName && !metricNames.includes(extraMetricName)) metricNames.push(extraMetricName);
+  const startIdx = latestOnly ? Math.max(1, candles.length - 1) : 1;
   let prevMetrics = null;
-  for (let i = 1; i < candles.length; i++) {
+  for (let i = startIdx; i < candles.length; i++) {
     const cTime = typeof candles[i].time === "number" ? new Date(candles[i].time * 1000) : new Date(candles[i].time);
     if (afterMs && cTime.getTime() <= afterMs) continue;
     const cIST = new Date(cTime.getTime() + (5.5 * 60 + cTime.getTimezoneOffset()) * 60000);
@@ -271,7 +272,13 @@ function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, window
       prevCandleLow: candles[i - 1]?.low ?? null,
     };
     const currentMetrics = computeAllMetrics(metricNames, ctx);
-    const allMet = entryConditions.every((c) => evaluateCondition(c, currentMetrics, prevMetrics || {}));
+    // In latestOnly mode there's no scan history to draw a "previous" value
+    // from for crossover detection, so compute it fresh from the candle
+    // just before this one - a single-step comparison, not a multi-candle walk.
+    const previousForCompare = latestOnly
+      ? computeAllMetrics(metricNames, { closes: candles.slice(0, i).map((c) => c.close), candles: candles.slice(0, i), vwapVal: vwap(candles.slice(0, i)), dayOpen: candles[0]?.open ?? null, prevHigh, prevLow, prevCandleHigh: candles[i - 2]?.high ?? null, prevCandleLow: candles[i - 2]?.low ?? null })
+      : (prevMetrics || {});
+    const allMet = entryConditions.every((c) => evaluateCondition(c, currentMetrics, previousForCompare));
     if (allMet) return { price: candles[i].close, time: candles[i].time, metrics: currentMetrics };
     prevMetrics = currentMetrics;
   }
@@ -516,7 +523,7 @@ export async function GET(request) {
       .order("exit_time", { ascending: false }).limit(1);
     const afterMs = lastClosed?.[0]?.exit_time ? new Date(lastClosed[0].exit_time).getTime() : null;
 
-    const scanResult = scanCandlesForEntry(candles, s.entry_conditions, prevLevels?.high ?? null, prevLevels?.low ?? null, startMin, endMin, s.stop_loss_type === "candle_metric" ? s.stop_loss_metric : null, afterMs);
+    const scanResult = scanCandlesForEntry(candles, s.entry_conditions, prevLevels?.high ?? null, prevLevels?.low ?? null, startMin, endMin, s.stop_loss_type === "candle_metric" ? s.stop_loss_metric : null, afterMs, s.entry_scan_mode === "latest_only");
 
     const allMet = !!scanResult;
     const currentMetrics = scanResult?.metrics || {};
