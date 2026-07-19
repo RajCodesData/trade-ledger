@@ -547,7 +547,15 @@ export async function GET(request) {
 
       let stopPrice;
       if (s.stop_loss_type === "candle_metric" && s.stop_loss_metric) {
-        stopPrice = currentMetrics[s.stop_loss_metric];
+        // Use the LATEST candle's structure, not the (possibly historical, in
+        // full-scan mode) candle that triggered the signal - entry is a fresh,
+        // current price, so the stop must be anchored to "now" too, or the two
+        // end up computed from disconnected points in time.
+        const latestPrevHigh = candles.length >= 2 ? candles[candles.length - 2].high : null;
+        const latestPrevLow = candles.length >= 2 ? candles[candles.length - 2].low : null;
+        if (s.stop_loss_metric === "prev_candle_high") stopPrice = latestPrevHigh;
+        else if (s.stop_loss_metric === "prev_candle_low") stopPrice = latestPrevLow;
+        else stopPrice = currentMetrics[s.stop_loss_metric]; // prev_day_high/low etc. are already day-constant, safe to reuse
       } else {
         const pct = s.stop_loss_value ?? s.stop_loss_pct ?? 0.5;
         stopPrice = s.direction === "long" ? entryPrice * (1 - pct / 100) : entryPrice * (1 + pct / 100);
@@ -611,6 +619,56 @@ export async function GET(request) {
             }
           }
           if (contracts < 1) { results.push({ strategy: s.id, skipped: "position size rounds to zero contracts" }); continue; }
+
+          // Final hard gate, right before any real money moves - re-verify risk
+          // distance is sane, independent of the earlier check. This is the last
+          // line of defense before a real order goes out.
+          if (s.max_risk_points && riskPoints > s.max_risk_points) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_risk_too_large_final_gate", riskPoints, maxAllowed: s.max_risk_points });
+            continue;
+          }
+          if (s.min_risk_points && riskPoints < s.min_risk_points) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_risk_too_small_final_gate", riskPoints, minRequired: s.min_risk_points });
+            continue;
+          }
+          // Absolute ceiling that applies even if max_risk_points was left blank -
+          // no real strategy should ever need a stop wider than 10% of price.
+          const riskPctOfPrice = (riskPoints / entryPrice) * 100;
+          if (riskPctOfPrice > 10) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_risk_over_10pct_sanity_ceiling", riskPoints, entryPrice, riskPctOfPrice });
+            try {
+              const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+              if (userData?.user?.email) {
+                await sendEmail({
+                  to: userData.user.email,
+                  subject: `🛑 Blocked an unusually large stop-loss on "${s.name}"`,
+                  html: `<p>A real order on <b>${s.name}</b> was about to place with a stop distance of ${riskPoints.toFixed(2)} points (${riskPctOfPrice.toFixed(1)}% of the entry price) - this exceeds the 10% sanity ceiling, so no order was placed.</p>
+                         <p>Entry would have been: ${entryPrice}. Check your strategy's stop-loss configuration and max risk points setting before this fires again.</p>`,
+                });
+              }
+            } catch (e) { console.error("sanity ceiling alert email failed:", e); }
+            continue;
+          }
+          // Directional sanity check: stop and target must land on the correct
+          // side of entry given the trade direction. If they don't, entry/stop/
+          // target were computed from inconsistent price references somewhere
+          // upstream - block rather than place a nonsensical real order.
+          const stopOnCorrectSide = s.direction === "long" ? stopPrice < entryPrice : stopPrice > entryPrice;
+          const targetOnCorrectSide = s.direction === "long" ? targetPrice > entryPrice : targetPrice < entryPrice;
+          if (!stopOnCorrectSide || !targetOnCorrectSide) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_inconsistent_price_references", entryPrice, stopPrice, targetPrice, direction: s.direction });
+            try {
+              const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+              if (userData?.user?.email) {
+                await sendEmail({
+                  to: userData.user.email,
+                  subject: `🛑 Blocked a real order with inconsistent prices on "${s.name}"`,
+                  html: `<p>A real order on <b>${s.name}</b> (${s.direction}) was about to place with entry ${entryPrice}, stop ${stopPrice}, target ${targetPrice} - the stop/target don't land on the mathematically correct side of entry for this direction, which usually means the prices came from inconsistent data. No order was placed.</p>`,
+                });
+              }
+            } catch (e) { console.error("directional sanity alert email failed:", e); }
+            continue;
+          }
 
           // Reserve this strategy's slot for today BEFORE placing any real order.
           // If this fails, another overlapping run already claimed it - stop
