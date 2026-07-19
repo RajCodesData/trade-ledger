@@ -970,9 +970,17 @@ function AutoTradeTab({ session }) {
     load();
   }
 
-  async function closeTradeManually(tradeId) {
-    if (!confirm("Close this trade at ₹0 P&L? Use this to clean up stuck or duplicate entries.")) return;
-    await supabase.from("paper_trades").update({ status: "closed", exit_time: new Date().toISOString(), pnl: 0, notes: "Manually closed (cleanup)" }).eq("id", tradeId);
+  async function closeTradeManually(tradeId, trade) {
+    const input = prompt(`This trade entered at ${trade.entry_price}. Enter the actual exit price from your Delta account (or leave blank to close at ₹0 P&L for a duplicate/error entry):`);
+    if (input === null) return; // cancelled
+    let pnl = 0, exitPrice = null;
+    if (input.trim()) {
+      exitPrice = parseFloat(input.trim());
+      if (isNaN(exitPrice)) { alert("That doesn't look like a valid number."); return; }
+      const qty = trade.qty || 1;
+      pnl = trade.side === "buy" ? (exitPrice - trade.entry_price) * qty : (trade.entry_price - exitPrice) * qty;
+    }
+    await supabase.from("paper_trades").update({ status: "closed", exit_time: new Date().toISOString(), exit_price: exitPrice, pnl }).eq("id", tradeId);
     load();
   }
 
@@ -1445,7 +1453,7 @@ function AutoTradeTab({ session }) {
                             <button className="pill" style={{ width: "100%", marginTop: 6 }} onClick={() => markLive(t.id)}>I took this trade live</button>
                           )}
                           {t.status === "open" && (
-                            <button className="ghost" style={{ width: "100%", marginTop: 6, color: "var(--loss)" }} onClick={() => closeTradeManually(t.id)}>Close (cleanup)</button>
+                            <button className="ghost" style={{ width: "100%", marginTop: 6, color: "var(--loss)" }} onClick={() => closeTradeManually(t.id, t)}>Close (cleanup)</button>
                           )}
                         </div>
                       ))}

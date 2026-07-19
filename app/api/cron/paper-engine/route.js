@@ -408,11 +408,30 @@ export async function GET(request) {
             }).eq("id", openTrade.id);
             results.push({ strategy: s.id, action: "real_position_closed", estimatedPnl: pnl });
           } else {
+            if (openTrade.position_check_failures > 0) {
+              await supabaseAdmin.from("paper_trades").update({ position_check_failures: 0 }).eq("id", openTrade.id);
+            }
             results.push({ strategy: s.id, action: "real_position_open" });
           }
         } catch (e) {
           console.error("delta position check failed:", e);
-          results.push({ strategy: s.id, skipped: "delta position check error" });
+          const failures = (openTrade.position_check_failures || 0) + 1;
+          await supabaseAdmin.from("paper_trades").update({ position_check_failures: failures }).eq("id", openTrade.id);
+          if (failures === 3) {
+            // Repeated failures, not a one-off blip - tell the user rather than silently going stale.
+            try {
+              const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+              if (userData?.user?.email) {
+                await sendEmail({
+                  to: userData.user.email,
+                  subject: `⚠️ Can't verify status of a real trade on "${s.name}"`,
+                  html: `<p>We've failed to check whether your live position on <b>${s.name}</b> (${s.instrument_key}) is still open, ${failures} times in a row.</p>
+                         <p>This trade might already be closed on Delta and we just can't confirm it, or something's wrong with the connection. <b>Please check your Delta Exchange account directly</b> and use "Close (cleanup)" on this trade in the app if it's actually already closed.</p>`,
+                });
+              }
+            } catch (emailErr) { console.error("failure alert email failed:", emailErr); }
+          }
+          results.push({ strategy: s.id, skipped: "delta position check error", failures });
         }
         continue;
       }
