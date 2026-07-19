@@ -979,14 +979,24 @@ function AutoTradeTab({ session }) {
   async function closeTradeManually(tradeId, trade) {
     const input = prompt(`This trade entered at ${trade.entry_price}. Enter the actual exit price from your Delta account (or leave blank to close at ₹0 P&L for a duplicate/error entry):`);
     if (input === null) return; // cancelled
-    let pnl = 0, exitPrice = null;
+    let pnl = 0, exitPrice = null, grossPnl = null, fees = null;
     if (input.trim()) {
       exitPrice = parseFloat(input.trim());
       if (isNaN(exitPrice)) { alert("That doesn't look like a valid number."); return; }
       const qty = trade.qty || 1;
-      pnl = trade.side === "buy" ? (exitPrice - trade.entry_price) * qty : (trade.entry_price - exitPrice) * qty;
+      const contractValue = trade.contract_value || 1;
+      grossPnl = trade.side === "buy" ? (exitPrice - trade.entry_price) * qty * contractValue : (trade.entry_price - exitPrice) * qty * contractValue;
+      if (trade.real_order && contractValue !== 1) {
+        // Same fee model as the automatic close path - 0.05% taker per side + 18% GST, Delta only for now.
+        const entryNotional = trade.entry_price * qty * contractValue;
+        const exitNotional = exitPrice * qty * contractValue;
+        fees = (entryNotional * 0.0005 + exitNotional * 0.0005) * 1.18;
+        pnl = grossPnl - fees;
+      } else {
+        pnl = grossPnl;
+      }
     }
-    await supabase.from("paper_trades").update({ status: "closed", exit_time: new Date().toISOString(), exit_price: exitPrice, pnl }).eq("id", tradeId);
+    await supabase.from("paper_trades").update({ status: "closed", exit_time: new Date().toISOString(), exit_price: exitPrice, pnl, gross_pnl: grossPnl, fees }).eq("id", tradeId);
     load();
   }
 
@@ -1453,6 +1463,9 @@ function AutoTradeTab({ session }) {
                               {new Date(t.entry_time).toLocaleString("en-IN")}{" "}
                               {t.status === "closed" ? `→ ${t.exit_price}` : t.status === "pending_confirmation" ? "(awaiting your confirmation)" : "(open)"}
                             </div>
+                            {t.real_order && t.status === "closed" && t.fees != null && (
+                              <div className="trade-meta">Net after fees. Gross: {fmt(t.gross_pnl || 0)} · Fees+GST: {fmt(t.fees)}</div>
+                            )}
                           </div>
                           <div className={"pnl " + ((t.pnl || 0) >= 0 ? "pos" : "neg")}>{t.pnl != null ? fmt(t.pnl) : "—"}</div>
                           {t.status === "open" && !t.is_live && (

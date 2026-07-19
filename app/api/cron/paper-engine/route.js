@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import { sendEmail } from "../../../../lib/sendEmail";
 import { deltaGetTicker, deltaGetCandles, deltaGetProduct, deltaSetLeverage, deltaPlaceBracketEntry, deltaGetPosition } from "../../../../lib/deltaExchange";
 import { decrypt } from "../../../../lib/crypto";
+import { calculateRoundTripFees } from "../../../../lib/brokerFees";
 
 const NAG_INTERVAL_MINUTES = 2;
 
@@ -346,9 +347,18 @@ export async function GET(request) {
               if (!stillOpen) {
                 const ltp = await fetchLtp(s.instrument_key, null);
                 const qty = openTrade.qty || 1;
-                const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty * (openTrade.contract_value || 1) : null;
+                const contractValue = openTrade.contract_value || 1;
+                let pnl = null, grossPnl = null, fees = null;
+                if (ltp) {
+                  grossPnl = (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty * contractValue;
+                  const entryNotional = openTrade.entry_price * qty * contractValue;
+                  const exitNotional = ltp * qty * contractValue;
+                  const feeCalc = calculateRoundTripFees("delta", entryNotional, exitNotional);
+                  fees = feeCalc?.totalCost ?? 0;
+                  pnl = grossPnl - fees;
+                }
                 await supabaseAdmin.from("paper_trades").update({
-                  status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl,
+                  status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl, gross_pnl: grossPnl, fees,
                   notes: "Real order - exit price is estimated. Verify actual result in your Delta Exchange account.",
                 }).eq("id", openTrade.id);
                 results.push({ strategy: s.id, action: "real_position_closed_at_window_end", pnl });
@@ -401,9 +411,18 @@ export async function GET(request) {
             // is always what Delta itself shows in your account.
             const ltp = await fetchLtp(s.instrument_key, null);
             const qty = openTrade.qty || 1;
-            const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty * (openTrade.contract_value || 1) : null;
+            const contractValue = openTrade.contract_value || 1;
+            let pnl = null, grossPnl = null, fees = null;
+            if (ltp) {
+              grossPnl = (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty * contractValue;
+              const entryNotional = openTrade.entry_price * qty * contractValue;
+              const exitNotional = ltp * qty * contractValue;
+              const feeCalc = calculateRoundTripFees("delta", entryNotional, exitNotional);
+              fees = feeCalc?.totalCost ?? 0;
+              pnl = grossPnl - fees;
+            }
             await supabaseAdmin.from("paper_trades").update({
-              status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl,
+              status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl, gross_pnl: grossPnl, fees,
               notes: "Real order - exit price is estimated. Verify actual result in your Delta Exchange account.",
             }).eq("id", openTrade.id);
             results.push({ strategy: s.id, action: "real_position_closed", estimatedPnl: pnl });
