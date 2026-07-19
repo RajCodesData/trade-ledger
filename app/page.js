@@ -72,6 +72,7 @@ function renderAiText(text, headerMap) {
 
 export default function Page() {
   const [session, setSession] = useState(undefined); // undefined = loading, null = logged out
+  const [showSplash, setShowSplash] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -79,9 +80,37 @@ export default function Page() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!sessionStorage.getItem("traider_splash_shown")) {
+      setShowSplash(true);
+      sessionStorage.setItem("traider_splash_shown", "1");
+      const t = setTimeout(() => setShowSplash(false), 2200);
+      return () => clearTimeout(t);
+    }
+  }, []);
+
+  if (showSplash) return <div id="app-root"><SplashScreen /></div>;
   if (session === undefined) return <div id="app-root"><div className="screen"><div className="content"><p className="muted-note">Loading...</p></div></div></div>;
   if (!session) return <div id="app-root"><AuthForm /></div>;
   return <div id="app-root"><Dashboard session={session} /></div>;
+}
+
+function SplashScreen() {
+  return (
+    <div className="splash-screen">
+      <div className="splash-word">
+        <span>tr</span>
+        <span className="splash-ai">AI</span>
+        <span>der</span>
+      </div>
+      <div className="splash-tick">
+        <svg width="22" height="14" viewBox="0 0 22 14" fill="none">
+          <path d="M1 11L7 6L11 9L21 1" stroke="#3FAE86" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </div>
+    </div>
+  );
 }
 
 // ---------- AUTH ----------
@@ -187,7 +216,9 @@ function Dashboard({ session }) {
     <div className="screen">
       <div className="topbar">
         <div className="brand"><Logo /><span className="brand-word">traider</span></div>
-        <button className="icon-btn" onClick={logout}>Log out ⏻</button>
+        <button className="avatar-btn" onClick={() => setTab("profile")} aria-label="Profile">
+          {(user.email || "U").slice(0, 1).toUpperCase()}
+        </button>
       </div>
 
       {tab === "journal" && (
@@ -201,22 +232,126 @@ function Dashboard({ session }) {
       {tab === "tax" && <TaxReportTab trades={trades} session={session} />}
       {tab === "auto" && <AutoTradeTab session={session} />}
       {tab === "broker" && <BrokerTab session={session} onSynced={loadAll} />}
+      {tab === "more" && <MoreTab setTab={setTab} />}
+      {tab === "profile" && <ProfileTab session={session} onLogout={logout} setTab={setTab} />}
 
       <div className="bottom-nav">
         {[
           ["journal", "📓", "Journal"],
-          ["guardrails", "🛡️", "Guardrails"],
           ["analytics", "📊", "Analytics"],
-          ["backtest", "🧪", "Backtest"],
-          ["tax", "🧾", "Tax"],
           ["auto", "🤖", "Auto"],
           ["broker", "🔗", "Broker"],
+          ["more", "⋯", "More"],
         ].map(([id, icon, label]) => (
-          <button key={id} className={"nav-btn" + (tab === id ? " active" : "")} onClick={() => setTab(id)}>
+          <button key={id} className={"nav-btn" + (tab === id || (id === "more" && ["guardrails", "backtest", "tax"].includes(tab)) ? " active" : "")} onClick={() => setTab(id)}>
             <span>{icon}</span><span>{label}</span>
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ---------- MORE TAB ----------
+function MoreTab({ setTab }) {
+  const items = [
+    ["guardrails", "🛡️", "Guardrails", "Daily loss limit and instrument watchlist"],
+    ["backtest", "🧪", "Backtest", "AI-assisted qualitative strategy review"],
+    ["tax", "🧾", "Tax report", "STCG/LTCG, F&O turnover, harvesting"],
+  ];
+  return (
+    <div className="content">
+      <h2 className="section-title">More</h2>
+      {items.map(([id, icon, label, desc]) => (
+        <button key={id} className="card more-row" onClick={() => setTab(id)}>
+          <span style={{ fontSize: 20 }}>{icon}</span>
+          <div style={{ textAlign: "left", flex: 1 }}>
+            <div className="trade-instr">{label}</div>
+            <div className="trade-meta">{desc}</div>
+          </div>
+          <span style={{ color: "var(--muted)" }}>›</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+
+// ---------- PROFILE TAB ----------
+const LEGAL_CONTENT = {
+  privacy: {
+    title: "Privacy policy",
+    body: `This is a draft starting point, not a reviewed legal document — have a qualified lawyer check this before relying on it publicly.
+
+We store your account details (email), trade journal entries, strategy configurations, and encrypted broker/exchange credentials to operate the app. Data is stored with Supabase and never sold to third parties. Broker and exchange API secrets are encrypted at rest. You can request deletion of your account and all associated data at any time by contacting support.`,
+  },
+  terms: {
+    title: "Terms of use",
+    body: `This is a draft starting point, not a reviewed legal document — have a qualified lawyer check this before relying on it publicly.
+
+Traider is provided as-is, without warranty of any kind. Trading involves substantial risk of loss. Nothing in this app constitutes financial or investment advice. AI-generated analysis, backtests, and strategy suggestions are informational only and may be inaccurate. You are solely responsible for all trading decisions and their outcomes, including trades placed automatically by strategies you configure and arm.`,
+  },
+  risk: {
+    title: "Risk disclosure",
+    body: `This is a draft starting point, not a reviewed legal document — have a qualified lawyer check this before relying on it publicly.
+
+Trading in equities, F&O, and cryptocurrency derivatives carries a high risk of loss and is not suitable for all investors. Leverage magnifies both gains and losses. Automated strategies can execute real orders without further confirmation once armed — you are responsible for reviewing and understanding any strategy before enabling live execution. Past performance, including backtested or paper-traded results, is not indicative of future results.`,
+  },
+};
+
+function ProfileTab({ session, onLogout, setTab }) {
+  const user = session.user;
+  const [view, setView] = useState("main");
+
+  if (view !== "main") {
+    const doc = LEGAL_CONTENT[view];
+    return (
+      <div className="content">
+        <button className="icon-btn" style={{ marginBottom: 12 }} onClick={() => setView("main")}>← Back</button>
+        <h2 className="section-title">{doc.title}</h2>
+        <div className="card">
+          {doc.body.split("\n\n").map((p, i) => <p key={i} style={{ fontSize: 13, lineHeight: 1.7, color: i === 0 ? "var(--warn)" : "var(--text)", marginTop: i === 0 ? 0 : 12 }}>{p}</p>)}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="content">
+      <div style={{ textAlign: "center", padding: "10px 0 20px" }}>
+        <div style={{ width: 56, height: 56, borderRadius: "50%", background: "linear-gradient(155deg, var(--gold-bright), #8A6F3F)", margin: "0 auto 10px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 600, color: "#161311" }}>
+          {(user.email || "U").slice(0, 1).toUpperCase()}
+        </div>
+        <div style={{ fontFamily: "var(--display)", fontStyle: "italic", fontSize: 16, fontWeight: 600 }}>{user.email}</div>
+        <div className="pill" style={{ marginTop: 8, cursor: "default" }}>Free plan</div>
+      </div>
+
+      <h2 className="section-title">Account</h2>
+      <div className="card">
+        <div className="trade-row" onClick={() => setTab("guardrails")} style={{ cursor: "pointer" }}>
+          <div className="trade-instr">Preferences</div><span style={{ color: "var(--muted)" }}>›</span>
+        </div>
+        <div className="trade-row" style={{ cursor: "not-allowed", opacity: 0.6 }}>
+          <div><div className="trade-instr">Upgrade plan</div><div className="trade-meta">Coming soon</div></div>
+        </div>
+      </div>
+
+      <h2 className="section-title">Legal</h2>
+      <div className="card">
+        <div className="trade-row" onClick={() => setView("privacy")} style={{ cursor: "pointer" }}><div className="trade-instr">Privacy policy</div><span style={{ color: "var(--muted)" }}>›</span></div>
+        <div className="trade-row" onClick={() => setView("terms")} style={{ cursor: "pointer" }}><div className="trade-instr">Terms of use</div><span style={{ color: "var(--muted)" }}>›</span></div>
+        <div className="trade-row" onClick={() => setView("risk")} style={{ cursor: "pointer" }}><div className="trade-instr">Risk disclosure</div><span style={{ color: "var(--muted)" }}>›</span></div>
+      </div>
+
+      <h2 className="section-title">Support</h2>
+      <div className="card">
+        <a href={`mailto:support@example.com?subject=Traider support`} style={{ textDecoration: "none" }}>
+          <div className="trade-row"><div className="trade-instr">Contact support</div><span style={{ color: "var(--muted)" }}>›</span></div>
+        </a>
+      </div>
+
+      <button className="ghost" style={{ color: "var(--loss)", marginTop: 8 }} onClick={onLogout}>Log out</button>
+      <div style={{ textAlign: "center", color: "var(--muted)", fontSize: 11, marginTop: 20 }}>Traider v1.0.0</div>
     </div>
   );
 }
