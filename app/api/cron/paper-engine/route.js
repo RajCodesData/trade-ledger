@@ -597,6 +597,7 @@ export async function GET(request) {
       if (s.execution_mode === "delta_live") {
         const dConn = deltaConnByUser[s.user_id];
         if (!dConn?.encrypted_api_key) { results.push({ strategy: s.id, skipped: "delta not connected - entry not taken" }); continue; }
+        let reservationId = null; // tracked outside the try so the catch block can always clean it up
         try {
           const apiKey = decrypt(dConn.encrypted_api_key);
           const apiSecret = decrypt(dConn.encrypted_api_secret);
@@ -684,6 +685,7 @@ export async function GET(request) {
             results.push({ strategy: s.id, action: "entry_skipped_already_open", detail: reserveErr.message });
             continue;
           }
+          reservationId = reservation.id;
 
           await deltaSetLeverage(dConn.environment, apiKey, apiSecret, product.id, s.leverage || 25);
           const orderRes = await deltaPlaceBracketEntry(dConn.environment, apiKey, apiSecret, {
@@ -706,6 +708,7 @@ export async function GET(request) {
             entry_price: filledPrice,
             delta_order_id: String(orderRes.result.id), delta_product_id: product.id,
           }).eq("id", reservation.id);
+          reservationId = null; // order genuinely succeeded - nothing to clean up anymore
           results.push({ strategy: s.id, action: "real_order_placed", contracts, price: filledPrice });
 
           try {
@@ -724,7 +727,20 @@ export async function GET(request) {
           } catch (e) { console.error("live order email failed:", e); }
         } catch (e) {
           console.error("delta live entry failed:", e);
-          results.push({ strategy: s.id, action: "delta_entry_error", error: String(e) });
+          if (reservationId) {
+            // The reservation was inserted but something after it threw before
+            // we could confirm the real order - a phantom record with no real
+            // trade behind it. Always clean this up, never leave it looking real.
+            try {
+              await supabaseAdmin.from("paper_trades").delete().eq("id", reservationId);
+              results.push({ strategy: s.id, action: "delta_entry_error_reservation_cleaned_up", error: String(e) });
+            } catch (cleanupErr) {
+              console.error("failed to clean up orphaned reservation:", cleanupErr);
+              results.push({ strategy: s.id, action: "delta_entry_error_CLEANUP_FAILED_check_manually", error: String(e), orphanedTradeId: reservationId });
+            }
+          } else {
+            results.push({ strategy: s.id, action: "delta_entry_error", error: String(e) });
+          }
         }
         continue;
       }
