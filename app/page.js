@@ -970,6 +970,12 @@ function AutoTradeTab({ session }) {
     load();
   }
 
+  async function deleteTradeRecord(tradeId) {
+    if (!confirm("Permanently delete this trade record? This only removes it from the app's journal — it has no effect on your actual Delta/Upstox account.")) return;
+    await supabase.from("paper_trades").delete().eq("id", tradeId);
+    load();
+  }
+
   async function closeTradeManually(tradeId, trade) {
     const input = prompt(`This trade entered at ${trade.entry_price}. Enter the actual exit price from your Delta account (or leave blank to close at ₹0 P&L for a duplicate/error entry):`);
     if (input === null) return; // cancelled
@@ -1455,6 +1461,7 @@ function AutoTradeTab({ session }) {
                           {t.status === "open" && (
                             <button className="ghost" style={{ width: "100%", marginTop: 6, color: "var(--loss)" }} onClick={() => closeTradeManually(t.id, t)}>Close (cleanup)</button>
                           )}
+                          <button className="ghost" style={{ width: "100%", marginTop: 6, color: "var(--muted)" }} onClick={() => deleteTradeRecord(t.id)}>Delete record</button>
                         </div>
                       ))}
                     </div>

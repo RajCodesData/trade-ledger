@@ -346,7 +346,7 @@ export async function GET(request) {
               if (!stillOpen) {
                 const ltp = await fetchLtp(s.instrument_key, null);
                 const qty = openTrade.qty || 1;
-                const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty : null;
+                const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty * (openTrade.contract_value || 1) : null;
                 await supabaseAdmin.from("paper_trades").update({
                   status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl,
                   notes: "Real order - exit price is estimated. Verify actual result in your Delta Exchange account.",
@@ -401,7 +401,7 @@ export async function GET(request) {
             // is always what Delta itself shows in your account.
             const ltp = await fetchLtp(s.instrument_key, null);
             const qty = openTrade.qty || 1;
-            const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty : null;
+            const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty * (openTrade.contract_value || 1) : null;
             await supabaseAdmin.from("paper_trades").update({
               status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl,
               notes: "Real order - exit price is estimated. Verify actual result in your Delta Exchange account.",
@@ -594,7 +594,7 @@ export async function GET(request) {
             side: s.direction === "long" ? "buy" : "sell", entry_price: entryPrice,
             entry_time: new Date().toISOString(), status: "open", trade_date: today,
             stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints, qty,
-            real_order: true,
+            real_order: true, contract_value: contractValue,
           }).select().single();
           if (reserveErr) {
             results.push({ strategy: s.id, action: "entry_skipped_already_open", detail: reserveErr.message });
