@@ -154,6 +154,7 @@ export async function POST(request) {
       prev_day_low: prevLevels?.low ?? null,
       prev_candle_high: candles[candles.length - 2]?.high ?? null,
       prev_candle_low: candles[candles.length - 2]?.low ?? null,
+      ema_5: ema(closes, 5),
       ema_9: ema(closes, 9),
       ema_21: ema(closes, 21),
       ema_50: ema(closes, 50),

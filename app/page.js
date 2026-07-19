@@ -1055,6 +1055,7 @@ function AutoTradeTab({ session }) {
           <div className="stat-grid" style={{ marginTop: 14 }}>
             <div className="stat-box"><div className="label">Price</div><div className="value">{previewValues.price?.toFixed(2) ?? "—"}</div></div>
             <div className="stat-box"><div className="label">VWAP</div><div className="value">{previewValues.vwap?.toFixed(2) ?? "—"}</div></div>
+            <div className="stat-box"><div className="label">EMA 5</div><div className="value">{previewValues.ema_5?.toFixed(2) ?? "—"}</div></div>
             <div className="stat-box"><div className="label">EMA 9</div><div className="value">{previewValues.ema_9?.toFixed(2) ?? "—"}</div></div>
             <div className="stat-box"><div className="label">EMA 21</div><div className="value">{previewValues.ema_21?.toFixed(2) ?? "—"}</div></div>
             <div className="stat-box"><div className="label">EMA 50</div><div className="value">{previewValues.ema_50?.toFixed(2) ?? "—"}</div></div>
