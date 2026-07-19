@@ -345,7 +345,7 @@ function ProfileTab({ session, onLogout, setTab }) {
 
       <h2 className="section-title">Support</h2>
       <div className="card">
-        <a href={`mailto:support@example.com?subject=Traider support`} style={{ textDecoration: "none" }}>
+        <a href={`mailto:proutine0124@gmail.com?subject=Traider support`} style={{ textDecoration: "none" }}>
           <div className="trade-row"><div className="trade-instr">Contact support</div><span style={{ color: "var(--muted)" }}>›</span></div>
         </a>
       </div>
