@@ -1330,9 +1330,14 @@ function AutoTradeTab({ session }) {
               <select value={draft.entry_scan_mode} onChange={(e) => setDraft({ ...draft, entry_scan_mode: e.target.value })}>
                 <option value="full_scan">Scan full history (catches signals that reversed between checks)</option>
                 <option value="latest_only">Only check the latest candle vs the one before it</option>
+                <option value="armed_breakout">Arm on filter, break of tracked level (e.g. "above 5 EMA, break below prev candle low")</option>
               </select>
             </div>
-            <div className="muted-note" style={{ marginTop: 0 }}>"Latest only" is simpler and more predictable but can miss a brief touch that already reversed before the engine checks again — same trade-off that existed before the historical scan was added.</div>
+            {draft.entry_scan_mode === "armed_breakout" ? (
+              <div className="muted-note" style={{ marginTop: 0 }}>Uses only your <b>first</b> entry condition as the filter (e.g. "price above ema_5"). While it holds, the previous candle's low/high is tracked continuously. The moment a candle actually breaks that tracked level, it enters. If the filter stops holding, it resets. Your other conditions (if any) are ignored in this mode.</div>
+            ) : (
+              <div className="muted-note" style={{ marginTop: 0 }}>"Latest only" is simpler and more predictable but can miss a brief touch that already reversed before the engine checks again — same trade-off that existed before the historical scan was added.</div>
+            )}
 
             <div className="row" style={{ marginTop: 10 }}>
               <div className="field"><label>Window start</label><input value={draft.window_start} onChange={(e) => setDraft({ ...draft, window_start: e.target.value })} /></div>
@@ -1480,7 +1485,11 @@ function AutoTradeTab({ session }) {
                     <select value={editValues.entry_scan_mode} onChange={(e) => setEditValues({ ...editValues, entry_scan_mode: e.target.value })}>
                       <option value="full_scan">Scan full history (catches signals that reversed between checks)</option>
                       <option value="latest_only">Only check the latest candle vs the one before it</option>
+                      <option value="armed_breakout">Arm on filter, break of tracked level</option>
                     </select>
+                    {editValues.entry_scan_mode === "armed_breakout" && (
+                      <div className="muted-note">Uses only your first entry condition as the filter. While it holds, the previous candle's low/high is tracked and updated continuously; entry fires the moment a candle breaks that tracked level. Other conditions are ignored in this mode.</div>
+                    )}
                   </div>
 
                   <label style={{ display: "block", fontSize: 12, color: "var(--muted)", marginBottom: 6, marginTop: 8 }}>Entry conditions</label>

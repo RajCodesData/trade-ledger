@@ -285,6 +285,55 @@ function scanCandlesForEntry(candles, entryConditions, prevHigh, prevLow, window
   return null;
 }
 
+// Dedicated "arm and break" pattern: while a filter condition holds (e.g.
+// price above the 5 EMA), continuously track the previous candle's low.
+// The moment a candle's low actually breaks below that tracked level, enter.
+// If the filter condition stops holding, the setup resets. This is kept as
+// its own persistent-state mechanism rather than folded into the generic
+// scanner, since "compare against a level noted on a previous cycle" needs
+// real state that survives across cron runs, not a single-pass scan.
+async function evaluateArmedBreakout(s, candles, prevHigh, prevLow) {
+  const filterCondition = s.entry_conditions[0]; // only the first condition acts as the "filter" in this mode
+  if (!filterCondition) return { triggered: false };
+
+  const latestClose = candles[candles.length - 1].close;
+  const latestLow = candles[candles.length - 1].low;
+  const latestHigh = candles[candles.length - 1].high;
+  const prevCandleLow = candles[candles.length - 2]?.low ?? null;
+  const prevCandleHigh = candles[candles.length - 2]?.high ?? null;
+
+  const metricNames = collectMetricNames([filterCondition]);
+  const ctx = { closes: candles.map((c) => c.close), candles, vwapVal: vwap(candles), dayOpen: candles[0]?.open ?? null, prevHigh, prevLow, prevCandleHigh, prevCandleLow };
+  const currentMetrics = computeAllMetrics(metricNames, ctx);
+  const filterHolds = evaluateCondition(filterCondition, currentMetrics, {});
+
+  if (!filterHolds) {
+    // Setup invalidated - reset if it was armed.
+    if (s.armed) await supabaseAdmin.from("strategies").update({ armed: false, armed_level: null }).eq("id", s.id);
+    return { triggered: false, note: "filter not met, disarmed" };
+  }
+
+  // Filter holds. Check breakout against the level noted on a PRIOR cycle first.
+  if (s.armed && s.armed_level != null) {
+    const brokeDown = latestLow < s.armed_level;
+    const brokeUp = latestHigh > s.armed_level;
+    const triggered = s.direction === "long" ? brokeUp : brokeDown;
+    if (triggered) {
+      await supabaseAdmin.from("strategies").update({ armed: false, armed_level: null }).eq("id", s.id);
+      return { triggered: true, price: latestClose, metrics: currentMetrics };
+    }
+  }
+
+  // Update (or set for the first time) the watched level for next cycle.
+  const newLevel = s.direction === "long" ? prevCandleHigh : prevCandleLow;
+  if (newLevel != null && newLevel !== s.armed_level) {
+    await supabaseAdmin.from("strategies").update({ armed: true, armed_level: newLevel, armed_updated_at: new Date().toISOString() }).eq("id", s.id);
+  } else if (!s.armed) {
+    await supabaseAdmin.from("strategies").update({ armed: true }).eq("id", s.id);
+  }
+  return { triggered: false, note: "armed, watching" };
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   if (searchParams.get("secret") !== process.env.PAPER_ENGINE_SECRET) {
@@ -523,7 +572,13 @@ export async function GET(request) {
       .order("exit_time", { ascending: false }).limit(1);
     const afterMs = lastClosed?.[0]?.exit_time ? new Date(lastClosed[0].exit_time).getTime() : null;
 
-    const scanResult = scanCandlesForEntry(candles, s.entry_conditions, prevLevels?.high ?? null, prevLevels?.low ?? null, startMin, endMin, s.stop_loss_type === "candle_metric" ? s.stop_loss_metric : null, afterMs, s.entry_scan_mode === "latest_only");
+    let scanResult;
+    if (s.entry_scan_mode === "armed_breakout") {
+      const result = await evaluateArmedBreakout(s, candles, prevLevels?.high ?? null, prevLevels?.low ?? null);
+      scanResult = result.triggered ? { price: result.price, time: new Date().toISOString(), metrics: result.metrics } : null;
+    } else {
+      scanResult = scanCandlesForEntry(candles, s.entry_conditions, prevLevels?.high ?? null, prevLevels?.low ?? null, startMin, endMin, s.stop_loss_type === "candle_metric" ? s.stop_loss_metric : null, afterMs, s.entry_scan_mode === "latest_only");
+    }
 
     const allMet = !!scanResult;
     const currentMetrics = scanResult?.metrics || {};
