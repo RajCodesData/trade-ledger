@@ -1666,12 +1666,50 @@ function BrokerTab({ session, onSynced }) {
   const [deltaSaving, setDeltaSaving] = useState(false);
   const [deltaResult, setDeltaResult] = useState(null); // { ok: bool, message: string }
   const [deltaStatus, setDeltaStatus] = useState(null); // existing saved connection, if any
+  const [angelApiKey, setAngelApiKey] = useState("");
+  const [angelClientCode, setAngelClientCode] = useState("");
+  const [angelPin, setAngelPin] = useState("");
+  const [angelTotpSecret, setAngelTotpSecret] = useState("");
+  const [angelSaving, setAngelSaving] = useState(false);
+  const [angelResult, setAngelResult] = useState(null);
+  const [angelStatus, setAngelStatus] = useState(null);
 
-  useEffect(() => { loadDeltaStatus(); }, []);
+  useEffect(() => { loadDeltaStatus(); loadAngelStatus(); }, []);
 
   async function loadDeltaStatus() {
     const { data } = await supabase.from("delta_connections").select("environment, connected_at").eq("user_id", session.user.id).maybeSingle();
     setDeltaStatus(data || null);
+  }
+
+  async function loadAngelStatus() {
+    const { data } = await supabase.from("angel_connections").select("connected_at").eq("user_id", session.user.id).maybeSingle();
+    setAngelStatus(data || null);
+  }
+
+  async function saveAngel() {
+    setAngelResult(null);
+    if (!angelApiKey.trim() || !angelClientCode.trim() || !angelPin.trim() || !angelTotpSecret.trim()) {
+      setAngelResult({ ok: false, message: "All four fields are required." });
+      return;
+    }
+    setAngelSaving(true);
+    try {
+      const res = await fetch("/api/angel/connect", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ apiKey: angelApiKey.trim(), clientCode: angelClientCode.trim(), pin: angelPin.trim(), totpSecret: angelTotpSecret.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setAngelResult({ ok: false, message: data.error || "Failed to save." });
+      } else {
+        setAngelResult({ ok: true, message: "Verified and connected to Angel One." });
+        setAngelApiKey(""); setAngelClientCode(""); setAngelPin(""); setAngelTotpSecret("");
+        loadAngelStatus();
+      }
+    } catch (e) {
+      setAngelResult({ ok: false, message: "Could not reach the server." });
+    }
+    setAngelSaving(false);
   }
 
   function connectUpstox() {
@@ -1775,6 +1813,45 @@ function BrokerTab({ session, onSynced }) {
           </div>
         )}
         <button className="primary" disabled={deltaSaving} onClick={saveDelta}>{deltaSaving ? "Verifying with Delta..." : "Save connection"}</button>
+      </div>
+
+      <h2 className="section-title" style={{ marginTop: 20 }}>Connect Angel One (for live NSE trading)</h2>
+      <div className="card">
+        {angelStatus ? (
+          <div className="banner" style={{ background: "rgba(63,174,134,.1)", borderColor: "rgba(63,174,134,.4)", color: "var(--profit)", marginTop: 0 }}>
+            ✅ Connected — since {new Date(angelStatus.connected_at).toLocaleString("en-IN")}
+          </div>
+        ) : (
+          <div className="banner warn" style={{ marginTop: 0 }}>Not connected yet.</div>
+        )}
+        <div className="banner danger">
+          These credentials can place real orders with real funds. Your PIN and TOTP secret are encrypted before storage, and verified against Angel One before saving.
+        </div>
+        <div className="field">
+          <label>API Key</label>
+          <input value={angelApiKey} onChange={(e) => setAngelApiKey(e.target.value)} placeholder="From smartapi.angelone.in" />
+        </div>
+        <div className="field">
+          <label>Client Code</label>
+          <input value={angelClientCode} onChange={(e) => setAngelClientCode(e.target.value)} placeholder="Your Angel One login ID" />
+        </div>
+        <div className="field">
+          <label>PIN</label>
+          <input type="password" value={angelPin} onChange={(e) => setAngelPin(e.target.value)} />
+        </div>
+        <div className="field">
+          <label>TOTP secret</label>
+          <input value={angelTotpSecret} onChange={(e) => setAngelTotpSecret(e.target.value)} placeholder="Manual-entry key from Enable TOTP, not a 6-digit code" />
+        </div>
+        <div className="muted-note" style={{ marginTop: 0 }}>
+          Enable TOTP at smartapi.angelbroking.com/enable-totp — save the manual-entry key shown next to the QR code, not just the code your authenticator app displays.
+        </div>
+        {angelResult && (
+          <div className={angelResult.ok ? "banner" : "banner danger"} style={angelResult.ok ? { background: "rgba(63,174,134,.1)", borderColor: "rgba(63,174,134,.4)", color: "var(--profit)" } : {}}>
+            {angelResult.ok ? "✅ " : "❌ "}{angelResult.message}
+          </div>
+        )}
+        <button className="primary" disabled={angelSaving} onClick={saveAngel}>{angelSaving ? "Verifying with Angel One..." : "Save connection"}</button>
       </div>
     </div>
   );
