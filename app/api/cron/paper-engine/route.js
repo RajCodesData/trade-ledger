@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 import { sendEmail } from "../../../../lib/sendEmail";
 import { deltaGetTicker, deltaGetCandles, deltaGetProduct, deltaSetLeverage, deltaPlaceBracketEntry, deltaGetPosition } from "../../../../lib/deltaExchange";
+import { angelEnsureSession, angelPlaceOrder } from "../../../../lib/angelOne";
 import { decrypt } from "../../../../lib/crypto";
 import { calculateRoundTripFees } from "../../../../lib/brokerFees";
 
@@ -334,6 +335,32 @@ async function evaluateArmedBreakout(s, candles, prevHigh, prevLow) {
   return { triggered: false, note: "armed, watching" };
 }
 
+// Decrypts an angel_connections row's credentials, gets a valid session
+// (refreshing/re-logging in if needed), and persists any refresh back to the
+// DB so the next cron run reuses it instead of re-logging in every cycle.
+// Returns { apiKey, jwtToken } ready to use in an angelPlaceOrder call.
+async function ensureAngelSession(aConn, userId) {
+  const apiKey = decrypt(aConn.encrypted_api_key);
+  const session = await angelEnsureSession({
+    apiKey,
+    clientCode: decrypt(aConn.encrypted_client_code),
+    pin: decrypt(aConn.encrypted_pin),
+    totpSecret: decrypt(aConn.encrypted_totp_secret),
+    jwtToken: aConn.jwt_token,
+    refreshToken: aConn.refresh_token,
+    sessionExpiresAt: aConn.session_expires_at,
+  });
+  if (session.refreshed) {
+    await supabaseAdmin.from("angel_connections").update({
+      jwt_token: session.jwtToken,
+      refresh_token: session.refreshToken,
+      feed_token: session.feedToken || aConn.feed_token,
+      session_expires_at: new Date(new Date().setHours(23, 59, 0, 0)).toISOString(),
+    }).eq("user_id", userId);
+  }
+  return { apiKey, jwtToken: session.jwtToken };
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   if (searchParams.get("secret") !== process.env.PAPER_ENGINE_SECRET) {
@@ -354,6 +381,8 @@ export async function GET(request) {
   const connByUser = Object.fromEntries((connections || []).map((c) => [c.user_id, c]));
   const { data: deltaConns } = await supabaseAdmin.from("delta_connections").select("*").in("user_id", userIds);
   const deltaConnByUser = Object.fromEntries((deltaConns || []).map((c) => [c.user_id, c]));
+  const { data: angelConns } = await supabaseAdmin.from("angel_connections").select("*").in("user_id", userIds);
+  const angelConnByUser = Object.fromEntries((angelConns || []).map((c) => [c.user_id, c]));
 
   for (const s of strategies) {
     const usesDelta = isDelta(s.instrument_key);
@@ -388,6 +417,47 @@ export async function GET(request) {
 
     if (nowMinutes >= endMin) {
       if (openTrade && openTrade.status === "open") {
+        if (openTrade.real_order && openTrade.broker === "angel") {
+          // Angel has no bracket order managing this - force a real market
+          // square-off order at window end rather than leaving it open or
+          // just marking it closed in our DB without actually exiting.
+          const aConn = angelConnByUser[s.user_id];
+          if (!aConn?.encrypted_api_key) { results.push({ strategy: s.id, skipped: "no angel connection for window-end exit" }); continue; }
+          try {
+            const { apiKey, jwtToken } = await ensureAngelSession(aConn, s.user_id);
+            const exitRes = await angelPlaceOrder(apiKey, jwtToken, {
+              exchange: s.angel_exchange || "NSE", tradingsymbol: s.angel_tradingsymbol, symboltoken: s.angel_symboltoken,
+              quantity: openTrade.qty, transactiontype: s.direction === "long" ? "SELL" : "BUY",
+            });
+            if (!exitRes.status) {
+              results.push({ strategy: s.id, action: "angel_window_end_exit_FAILED_check_manually", error: exitRes.message || exitRes.errorcode });
+              try {
+                const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+                if (userData?.user?.email) {
+                  await sendEmail({
+                    to: userData.user.email,
+                    subject: `⚠️ Angel window-end exit FAILED on "${s.name}" - position still open`,
+                    html: `<p><b>${s.name}</b> reached the end of its window but the real square-off order on Angel One failed: ${exitRes.message || exitRes.errorcode || "unknown error"}.</p><p><b>Check your Angel One account and square off manually.</b></p>`,
+                  });
+                }
+              } catch (e) { console.error("angel window-end failure email failed:", e); }
+              continue;
+            }
+            const ltp = await fetchLtp(s.instrument_key, conn?.access_token);
+            const qty = openTrade.qty || 1;
+            const pnl = ltp ? (s.direction === "long" ? ltp - openTrade.entry_price : openTrade.entry_price - ltp) * qty : null;
+            await supabaseAdmin.from("paper_trades").update({
+              status: "closed", exit_price: ltp, exit_time: new Date().toISOString(), pnl,
+              angel_exit_order_id: String(exitRes.data?.orderid || ""),
+              notes: "Real Angel One order - force-closed at window end with a real market order. Verify actual fill price in your Angel One account.",
+            }).eq("id", openTrade.id);
+            results.push({ strategy: s.id, action: "angel_real_position_closed_at_window_end", pnl });
+          } catch (e) {
+            console.error("angel window-end exit failed:", e);
+            results.push({ strategy: s.id, skipped: "angel window-end exit error", error: String(e) });
+          }
+          continue;
+        }
         if (openTrade.real_order) {
           // Don't guess at this - check the actual exchange position before
           // deciding anything. Never silently mark a real order "closed" when
@@ -450,6 +520,77 @@ export async function GET(request) {
     if (nowMinutes < startMin) { results.push({ strategy: s.id, skipped: "before window" }); continue; }
 
     if (openTrade) {
+      // Real order on Angel One - unlike Delta, there's no resting bracket
+      // order managing this. We detect the stop/target touch ourselves
+      // (same candle-scan + LTP fallback paper trades already use) and then
+      // place a real opposite-side market order the moment it's hit. Between
+      // polls there's genuinely no protection - see the handoff note on this.
+      if (openTrade.real_order && openTrade.broker === "angel") {
+        const aConn = angelConnByUser[s.user_id];
+        if (!aConn?.encrypted_api_key) { results.push({ strategy: s.id, skipped: "no angel connection" }); continue; }
+        try {
+          const ltp = await fetchLtp(s.instrument_key, conn?.access_token);
+          if (!ltp) { results.push({ strategy: s.id, skipped: "no ltp for angel position check" }); continue; }
+          let hit = false, hitType = null, hitPrice = ltp;
+          try {
+            const scan = await scanForTouchSinceEntry(s.instrument_key, conn?.access_token, openTrade.entry_time, openTrade.stop_price, openTrade.target_price, s.direction);
+            if (scan.hit) { hit = true; hitType = scan.hitType; hitPrice = scan.price; }
+          } catch (e) { console.error("angel touch scan failed, falling back to LTP check:", e); }
+          if (!hit) {
+            const stopHit = s.direction === "long" ? ltp <= openTrade.stop_price : ltp >= openTrade.stop_price;
+            const targetHit = s.direction === "long" ? ltp >= openTrade.target_price : ltp <= openTrade.target_price;
+            hit = stopHit || targetHit;
+            hitType = stopHit ? "stop" : targetHit ? "target" : null;
+            hitPrice = ltp;
+          }
+
+          if (!hit) { results.push({ strategy: s.id, action: "angel_real_position_holding" }); continue; }
+
+          const { apiKey, jwtToken } = await ensureAngelSession(aConn, s.user_id);
+          const exitRes = await angelPlaceOrder(apiKey, jwtToken, {
+            exchange: s.angel_exchange || "NSE", tradingsymbol: s.angel_tradingsymbol, symboltoken: s.angel_symboltoken,
+            quantity: openTrade.qty, transactiontype: s.direction === "long" ? "SELL" : "BUY",
+          });
+          if (!exitRes.status) {
+            // Exit order failed - do NOT mark closed, that would misrepresent a real open position. Alert and keep retrying next cycle.
+            results.push({ strategy: s.id, action: "angel_exit_order_FAILED_still_open", hitType, error: exitRes.message || exitRes.errorcode });
+            try {
+              const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+              if (userData?.user?.email) {
+                await sendEmail({
+                  to: userData.user.email,
+                  subject: `⚠️ Angel exit order FAILED on "${s.name}" - position still open`,
+                  html: `<p><b>${s.name}</b> hit its ${hitType} at ${hitPrice}, but the real exit order on Angel One failed: ${exitRes.message || exitRes.errorcode || "unknown error"}.</p><p><b>Check your Angel One account and square off manually if needed.</b> The engine will keep retrying every cycle.</p>`,
+                });
+              }
+            } catch (e) { console.error("angel exit failure email failed:", e); }
+            continue;
+          }
+
+          const qty = openTrade.qty || 1;
+          const pnl = (s.direction === "long" ? hitPrice - openTrade.entry_price : openTrade.entry_price - hitPrice) * qty;
+          await supabaseAdmin.from("paper_trades").update({
+            status: "closed", exit_price: hitPrice, exit_time: new Date().toISOString(), pnl,
+            angel_exit_order_id: String(exitRes.data?.orderid || ""),
+            notes: "Real Angel One order - exit was a real market order placed by the engine on stop/target touch. Verify actual fill price in your Angel One account.",
+          }).eq("id", openTrade.id);
+          results.push({ strategy: s.id, action: "angel_real_position_closed", hitType, pnl });
+          try {
+            const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+            if (userData?.user?.email) {
+              await sendEmail({
+                to: userData.user.email,
+                subject: `🔴 REAL Angel One exit placed: "${s.name}" ${hitType} hit`,
+                html: `<p><b>${s.name}</b> hit its ${hitType}. A real MARKET exit order was placed on Angel One.</p><p>Entry: ${openTrade.entry_price}<br/>Exit (estimated): ${hitPrice}<br/>Qty: ${qty}</p><p style="color:#c00;">Verify the actual fill in your Angel One account - market order fill price can differ from this estimate.</p>`,
+              });
+            }
+          } catch (e) { console.error("angel exit email failed:", e); }
+        } catch (e) {
+          console.error("angel position check/exit failed:", e);
+          results.push({ strategy: s.id, skipped: "angel position check error", error: String(e) });
+        }
+        continue;
+      }
       // Real order on Delta - the exchange's own bracket order manages the exit.
       // We just poll to see if it's closed yet, we don't recompute stop/target ourselves.
       if (openTrade.real_order) {
@@ -795,6 +936,119 @@ export async function GET(request) {
             }
           } else {
             results.push({ strategy: s.id, action: "delta_entry_error", error: String(e) });
+          }
+        }
+        continue;
+      }
+
+      if (s.execution_mode === "angel_live") {
+        const aConn = angelConnByUser[s.user_id];
+        if (!aConn?.encrypted_api_key) { results.push({ strategy: s.id, skipped: "angel not connected - entry not taken" }); continue; }
+        if (!s.angel_tradingsymbol || !s.angel_symboltoken) { results.push({ strategy: s.id, skipped: "angel symbol not configured on this strategy" }); continue; }
+        let reservationId = null; // tracked outside the try so the catch block can always clean it up
+        try {
+          // Same final safety gates as Delta, re-checked right before real money moves.
+          if (s.max_risk_points && riskPoints > s.max_risk_points) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_risk_too_large_final_gate", riskPoints, maxAllowed: s.max_risk_points });
+            continue;
+          }
+          if (s.min_risk_points && riskPoints < s.min_risk_points) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_risk_too_small_final_gate", riskPoints, minRequired: s.min_risk_points });
+            continue;
+          }
+          const riskPctOfPrice = (riskPoints / entryPrice) * 100;
+          if (riskPctOfPrice > 10) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_risk_over_10pct_sanity_ceiling", riskPoints, entryPrice, riskPctOfPrice });
+            try {
+              const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+              if (userData?.user?.email) {
+                await sendEmail({
+                  to: userData.user.email,
+                  subject: `🛑 Blocked an unusually large stop-loss on "${s.name}"`,
+                  html: `<p>A real order on <b>${s.name}</b> was about to place with a stop distance of ${riskPoints.toFixed(2)} points (${riskPctOfPrice.toFixed(1)}% of the entry price) - this exceeds the 10% sanity ceiling, so no order was placed.</p>
+                         <p>Entry would have been: ${entryPrice}. Check your strategy's stop-loss configuration and max risk points setting before this fires again.</p>`,
+                });
+              }
+            } catch (e) { console.error("sanity ceiling alert email failed:", e); }
+            continue;
+          }
+          const stopOnCorrectSide = s.direction === "long" ? stopPrice < entryPrice : stopPrice > entryPrice;
+          const targetOnCorrectSide = s.direction === "long" ? targetPrice > entryPrice : targetPrice < entryPrice;
+          if (!stopOnCorrectSide || !targetOnCorrectSide) {
+            results.push({ strategy: s.id, action: "BLOCKED_real_order_inconsistent_price_references", entryPrice, stopPrice, targetPrice, direction: s.direction });
+            try {
+              const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+              if (userData?.user?.email) {
+                await sendEmail({
+                  to: userData.user.email,
+                  subject: `🛑 Blocked a real order with inconsistent prices on "${s.name}"`,
+                  html: `<p>A real order on <b>${s.name}</b> (${s.direction}) was about to place with entry ${entryPrice}, stop ${stopPrice}, target ${targetPrice} - the stop/target don't land on the mathematically correct side of entry for this direction, which usually means the prices came from inconsistent data. No order was placed.</p>`,
+                });
+              }
+            } catch (e) { console.error("directional sanity alert email failed:", e); }
+            continue;
+          }
+
+          const quantity = Math.round(qty);
+          if (quantity < 1) { results.push({ strategy: s.id, skipped: "angel position size rounds to zero" }); continue; }
+
+          // Reserve this strategy's slot for today BEFORE placing any real order,
+          // same pattern as Delta - stops overlapping cron runs from duplicating.
+          const { data: reservation, error: reserveErr } = await supabaseAdmin.from("paper_trades").insert({
+            strategy_id: s.id, user_id: s.user_id, instrument_key: s.instrument_key,
+            side: s.direction === "long" ? "buy" : "sell", entry_price: entryPrice,
+            entry_time: new Date().toISOString(), status: "open", trade_date: today,
+            stop_price: stopPrice, target_price: targetPrice, risk_points: riskPoints, qty: quantity,
+            real_order: true, broker: "angel",
+          }).select().single();
+          if (reserveErr) {
+            results.push({ strategy: s.id, action: "entry_skipped_already_open", detail: reserveErr.message });
+            continue;
+          }
+          reservationId = reservation.id;
+
+          const { apiKey, jwtToken } = await ensureAngelSession(aConn, s.user_id);
+          const orderRes = await angelPlaceOrder(apiKey, jwtToken, {
+            exchange: s.angel_exchange || "NSE", tradingsymbol: s.angel_tradingsymbol, symboltoken: s.angel_symboltoken,
+            quantity, transactiontype: s.direction === "long" ? "BUY" : "SELL",
+          });
+
+          if (!orderRes.status) {
+            await supabaseAdmin.from("paper_trades").delete().eq("id", reservation.id);
+            results.push({ strategy: s.id, action: "angel_order_failed", error: orderRes.message || orderRes.errorcode });
+            continue;
+          }
+
+          await supabaseAdmin.from("paper_trades").update({ angel_order_id: String(orderRes.data?.orderid || "") }).eq("id", reservation.id);
+          reservationId = null; // order genuinely succeeded - nothing to clean up anymore
+          results.push({ strategy: s.id, action: "real_order_placed", broker: "angel", quantity, price: entryPrice });
+
+          try {
+            const { data: userData } = await supabaseAdmin.auth.admin.getUserById(s.user_id);
+            const email = userData?.user?.email;
+            if (email) {
+              await sendEmail({
+                to: email,
+                subject: `🔴 REAL order placed: "${s.name}" (Angel One)`,
+                html: `<p><b>${s.name}</b> just placed a REAL market order on Angel One.</p>
+                       <p>Symbol: ${s.angel_tradingsymbol}<br/>Side: ${s.direction}<br/>Qty: ${quantity}<br/>
+                       Entry (estimated): ${entryPrice}<br/>Stop: ${stopPrice}<br/>Target: ${targetPrice}</p>
+                       <p style="color:#c00;">This used real funds. Angel One has no bracket order support - the engine itself will place a real exit order when it detects the stop/target is hit, polling every cron cycle. Verify in your Angel One account.</p>`,
+              });
+            }
+          } catch (e) { console.error("angel live order email failed:", e); }
+        } catch (e) {
+          console.error("angel live entry failed:", e);
+          if (reservationId) {
+            try {
+              await supabaseAdmin.from("paper_trades").delete().eq("id", reservationId);
+              results.push({ strategy: s.id, action: "angel_entry_error_reservation_cleaned_up", error: String(e) });
+            } catch (cleanupErr) {
+              console.error("failed to clean up orphaned reservation:", cleanupErr);
+              results.push({ strategy: s.id, action: "angel_entry_error_CLEANUP_FAILED_check_manually", error: String(e), orphanedTradeId: reservationId });
+            }
+          } else {
+            results.push({ strategy: s.id, action: "angel_entry_error", error: String(e) });
           }
         }
         continue;

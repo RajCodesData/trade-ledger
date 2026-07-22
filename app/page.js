@@ -869,6 +869,67 @@ const COMMON_INSTRUMENTS = [
   { label: "Ethereum (ETHUSD)", value: "DELTA|ETHUSD" },
 ];
 
+// Search-as-you-type against Angel One's instrument master. Angel's order API
+// needs an exact tradingsymbol + symboltoken pair - this is how the user
+// finds it without having to know Angel's internal addressing themselves.
+function AngelSymbolLookup({ session, exchange, tradingsymbol, onSelect }) {
+  const [query, setQuery] = useState(tradingsymbol || "");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!query.trim() || query === tradingsymbol) { setResults([]); return; }
+    const handle = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await fetch(`/api/angel/lookup-symbol?q=${encodeURIComponent(query)}&exchange=${encodeURIComponent(exchange || "NSE")}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        const data = await res.json();
+        setResults(data.matches || []);
+        setOpen(true);
+      } catch (e) {
+        setResults([]);
+      }
+      setSearching(false);
+    }, 350);
+    return () => clearTimeout(handle);
+  }, [query, exchange]);
+
+  return (
+    <div className="field" style={{ position: "relative" }}>
+      <label>Angel One symbol</label>
+      <input
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); }}
+        onFocus={() => results.length && setOpen(true)}
+        placeholder="e.g. RELIANCE, NIFTY, SBIN"
+      />
+      {searching && <div className="muted-note" style={{ marginTop: 0 }}>Searching Angel One's instrument list...</div>}
+      {open && results.length > 0 && (
+        <div className="card" style={{ position: "absolute", zIndex: 10, top: "100%", left: 0, right: 0, padding: 6, maxHeight: 220, overflowY: "auto", background: "var(--surface2)" }}>
+          {results.map((r) => (
+            <div
+              key={r.symboltoken}
+              style={{ padding: "8px 6px", cursor: "pointer", borderBottom: "1px solid var(--border)" }}
+              onClick={() => {
+                onSelect({ tradingsymbol: r.tradingsymbol, symboltoken: r.symboltoken, exchange: r.exchange });
+                setQuery(r.tradingsymbol);
+                setOpen(false);
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>{r.tradingsymbol}</div>
+              <div className="trade-meta">{r.name} · {r.exchange} · lot {r.lotsize}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="muted-note" style={{ marginTop: 0 }}>Search and select from the list - this fills in the exact symbol/token Angel's order API requires. Typing alone won't save a valid selection.</div>
+    </div>
+  );
+}
+
 function AutoTradeTab({ session }) {
   const user = session.user;
   const [strategies, setStrategies] = useState([]);
@@ -958,6 +1019,7 @@ function AutoTradeTab({ session }) {
         execution_mode: "paper",
         leverage: 25,
         max_position_usd: null, entry_scan_mode: "full_scan",
+        angel_tradingsymbol: "", angel_symboltoken: "", angel_exchange: "NSE",
       });
     } catch (e) {
       setVideoError("Could not reach the video parsing service.");
@@ -1002,6 +1064,7 @@ function AutoTradeTab({ session }) {
         leverage: 25,
         max_position_usd: null,
         entry_scan_mode: "full_scan",
+        angel_tradingsymbol: "", angel_symboltoken: "", angel_exchange: "NSE",
       });
     } catch (e) {
       console.error("strategy parse error:", e);
@@ -1011,6 +1074,10 @@ function AutoTradeTab({ session }) {
   }
 
   async function saveStrategy(armed) {
+    if (armed && draft.execution_mode === "angel_live" && (!draft.angel_tradingsymbol || !draft.angel_symboltoken)) {
+      alert("Select an Angel One symbol from the search results before going live — the engine can't place real orders without it.");
+      return;
+    }
     setSaving(true);
     const { error } = await supabase.from("strategies").insert({
       user_id: user.id, name: strategyName.trim() || description.slice(0, 60), description,
@@ -1023,6 +1090,7 @@ function AutoTradeTab({ session }) {
       risk_pct: draft.risk_pct, lot_size: draft.lot_size,
       execution_mode: draft.execution_mode, leverage: draft.leverage, max_position_usd: draft.max_position_usd,
       entry_scan_mode: draft.entry_scan_mode,
+      angel_tradingsymbol: draft.angel_tradingsymbol || null, angel_symboltoken: draft.angel_symboltoken || null, angel_exchange: draft.angel_exchange || "NSE",
     });
     setSaving(false);
     if (error) {
@@ -1080,6 +1148,9 @@ function AutoTradeTab({ session }) {
       leverage: s.leverage,
       max_position_usd: s.max_position_usd,
       entry_scan_mode: s.entry_scan_mode,
+      angel_tradingsymbol: s.angel_tradingsymbol || "",
+      angel_symboltoken: s.angel_symboltoken || "",
+      angel_exchange: s.angel_exchange || "NSE",
     });
   }
   function updateEditCondition(i, patch) {
@@ -1094,6 +1165,10 @@ function AutoTradeTab({ session }) {
     setEditValues({ ...editValues, entry_conditions: editValues.entry_conditions.filter((_, idx) => idx !== i) });
   }
   async function saveEdit(id) {
+    if (editValues.execution_mode === "angel_live" && (!editValues.angel_tradingsymbol || !editValues.angel_symboltoken)) {
+      alert("Select an Angel One symbol from the search results before going live — the engine can't place real orders without it.");
+      return;
+    }
     const { error } = await supabase.from("strategies").update(editValues).eq("id", id);
     if (error) {
       alert("Save failed: " + error.message + "\n\nThis usually means a database migration hasn't been run yet.");
@@ -1433,7 +1508,35 @@ function AutoTradeTab({ session }) {
                 )}
               </>
             )}
-            <button className="primary" disabled={saving} onClick={() => saveStrategy(true)}>{saving ? "Saving..." : draft.execution_mode === "delta_live" ? "Save & Go Live" : "Save & Arm (paper trading)"}</button>
+            {!instrumentKey.startsWith("DELTA|") && (
+              <>
+                <div className="field">
+                  <label>Execution</label>
+                  <select value={draft.execution_mode} onChange={(e) => setDraft({ ...draft, execution_mode: e.target.value })}>
+                    <option value="paper">Paper trading (simulated)</option>
+                    <option value="angel_live">🔴 Go Live — place real orders on Angel One</option>
+                  </select>
+                </div>
+                {draft.execution_mode === "angel_live" && (
+                  <div className="banner danger">
+                    This will place real orders using your connected Angel One account the moment conditions are met. Make sure you've connected Angel One on the Broker tab first.
+                    <div className="muted-note" style={{ marginTop: 6 }}>
+                      Angel One has no bracket-order support — the engine places a real market entry order, then polls and places a real market exit order itself when your stop or target is touched. Between polls there's no exchange-side protection, unlike Delta. Angel also has no sandbox: your first live test is real money from the first order. Start with a tiny, wide-stop position on a liquid stock to validate the pipeline before running a real strategy.
+                    </div>
+                    <AngelSymbolLookup
+                      session={session}
+                      exchange={draft.angel_exchange}
+                      tradingsymbol={draft.angel_tradingsymbol}
+                      onSelect={({ tradingsymbol, symboltoken, exchange }) => setDraft({ ...draft, angel_tradingsymbol: tradingsymbol, angel_symboltoken: symboltoken, angel_exchange: exchange })}
+                    />
+                    {draft.angel_tradingsymbol && draft.angel_symboltoken && (
+                      <div className="muted-note" style={{ marginTop: 0 }}>Selected: <b>{draft.angel_tradingsymbol}</b> (token {draft.angel_symboltoken}, {draft.angel_exchange})</div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+            <button className="primary" disabled={saving} onClick={() => saveStrategy(true)}>{saving ? "Saving..." : (draft.execution_mode === "delta_live" || draft.execution_mode === "angel_live") ? "Save & Go Live" : "Save & Arm (paper trading)"}</button>
             <button className="ghost" disabled={saving} onClick={() => saveStrategy(false)}>Save without arming</button>
           </div>
         )}
@@ -1449,10 +1552,10 @@ function AutoTradeTab({ session }) {
           const net = closed.reduce((sum, t) => sum + (t.pnl || 0), 0);
           const wins = closed.filter((t) => (t.pnl || 0) > 0).length;
           return (
-            <div className="card" key={s.id} style={s.execution_mode === "delta_live" ? { border: "1px solid var(--loss)" } : {}}>
+            <div className="card" key={s.id} style={(s.execution_mode === "delta_live" || s.execution_mode === "angel_live") ? { border: "1px solid var(--loss)" } : {}}>
               <div className="row">
                 <div>
-                  <div className="trade-instr">{s.name} {s.execution_mode === "delta_live" && <span style={{ color: "var(--loss)" }}>🔴 LIVE</span>}</div>
+                  <div className="trade-instr">{s.name} {(s.execution_mode === "delta_live" || s.execution_mode === "angel_live") && <span style={{ color: "var(--loss)" }}>🔴 LIVE</span>}</div>
                   <div className="trade-meta">{s.instrument_key} · {s.direction} · {(s.entry_conditions || []).map((c) => `${c.metric} ${c.comparator.replace(/_/g, " ")} ${c.value}`).join(" AND ")}</div>
                 </div>
                 <button className="pill" style={{ color: s.active ? "var(--profit)" : "var(--muted)" }} onClick={() => toggleActive(s)}>
@@ -1606,6 +1709,31 @@ function AutoTradeTab({ session }) {
                       )}
                     </>
                   )}
+                  {!s.instrument_key.startsWith("DELTA|") && (
+                    <>
+                      <div className="field">
+                        <label>Execution</label>
+                        <select value={editValues.execution_mode} onChange={(e) => setEditValues({ ...editValues, execution_mode: e.target.value })}>
+                          <option value="paper">Paper trading (simulated)</option>
+                          <option value="angel_live">🔴 Go Live — real orders on Angel One</option>
+                        </select>
+                      </div>
+                      {editValues.execution_mode === "angel_live" && (
+                        <div className="banner danger">
+                          Angel One has no bracket-order support and no sandbox — see the notes shown when this strategy was created. Between polls there's no exchange-side stop/target protection.
+                          <AngelSymbolLookup
+                            session={session}
+                            exchange={editValues.angel_exchange}
+                            tradingsymbol={editValues.angel_tradingsymbol}
+                            onSelect={({ tradingsymbol, symboltoken, exchange }) => setEditValues({ ...editValues, angel_tradingsymbol: tradingsymbol, angel_symboltoken: symboltoken, angel_exchange: exchange })}
+                          />
+                          {editValues.angel_tradingsymbol && editValues.angel_symboltoken && (
+                            <div className="muted-note" style={{ marginTop: 0 }}>Selected: <b>{editValues.angel_tradingsymbol}</b> (token {editValues.angel_symboltoken}, {editValues.angel_exchange})</div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
 
                   <button className="primary" onClick={() => saveEdit(s.id)}>Save changes</button>
                   <button className="ghost" onClick={() => { setEditingId(null); setEditValues(null); }}>Cancel</button>
@@ -1623,7 +1751,7 @@ function AutoTradeTab({ session }) {
                       {trades.length === 0 ? <div className="muted-note">No paper trades logged yet.</div> : trades.map((t) => (
                         <div className="trade-row" key={t.id} style={{ flexWrap: "wrap" }}>
                           <div>
-                            <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price} {t.real_order && <span style={{ color: "var(--loss)" }}>🔴 REAL ORDER</span>} {t.is_live && !t.real_order && <span style={{ color: "var(--loss)" }}>● LIVE</span>}</div>
+                            <div className="trade-instr">{t.side === "buy" ? "Long" : "Short"} @ {t.entry_price} {t.real_order && <span style={{ color: "var(--loss)" }}>🔴 REAL ORDER ({t.broker === "angel" ? "Angel One" : "Delta"})</span>} {t.is_live && !t.real_order && <span style={{ color: "var(--loss)" }}>● LIVE</span>}</div>
                             <div className="trade-meta">
                               {new Date(t.entry_time).toLocaleString("en-IN")}{" "}
                               {t.status === "closed" ? `→ ${t.exit_price}` : t.status === "pending_confirmation" ? "(awaiting your confirmation)" : "(open)"}
